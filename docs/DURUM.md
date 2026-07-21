@@ -57,13 +57,59 @@ Girdi → NORMALIZE → ELASTICSEARCH (aday havuzu: parent + subunit)
 **F2 revizyon notu (Ayrım 0):** karar katmanını optimize etmeden ÖNCE gerçek sette
 recall ölç — darboğaz retrieval ise LLM'i düzeltmenin faydası yok.
 
-## Neyi kanıtladık (bu oturum, canlı)
+## SIRADAKI İŞLER (öncelik sırası, detaylı yol haritası)
 
-- Uçtan uca çalışıyor: `"gazi üniversitesi istatistik bölümü"` → parent GAZİ net
-  top-1 (199 vs 97). Doğru subunit havuzda (#2, birleşik-sorgu kirlenmesi yüzünden).
-- **Parent-first cascade** (parent=101 filtreli, "istatistik bölümü"): İstatistik
-  Bölümü net #1; 11 Gazi istatistik varyantı kind_label'larıyla görünür. → F2'de
-  cascade'i kalıcılaştır.
+### 1. `retrieve/` katmanı — query decomposition + parent-first cascade + sinyaller  [ETİKET/API GEREKTİRMEZ — İLK YAP]
+
+**Neden (canlı denemelerden kanıtlanmış çıkarım):** İKİ yapısal sorun var:
+- **Parent kirlenmesi:** sorgu, kurum adının yanında gürültü (konum bilgisi, birim/fakülte kelimeleri)
+  taşıyınca parent araması sapıyor ve gürültüyle örtüşen yanlış kurumları öne çıkarıyor; parent'ı
+  yalnızca **çıkarılan kurum kısmıyla** aramak bu sapmayı gideriyor.
+- **Subunit sıralaması:** parent çözülüp subunit `parent_id` ile filtrelenince, üniversite token'ı
+  ayırt ediciliğini kaybediyor ve asıl birim adı doğru kaydı üste taşıyor.
+
+**Yapılacaklar:**
+- `retrieve/decompose.py`: sorguyu **kurum işaretçisiyle** böl (`üniversitesi/university/enstitüsü/
+  institute/hastanesi/koleji/yüksekokulu`...; kısaltma genişletme "üni."→"üniversitesi" zaten var).
+  Kurum kısmı = başından işaretçiye kadar (dahil); birim kısmı = sonrası. **İşaretçi yoksa** tam sorgu (fallback).
+- `retrieve/resolve.py`:
+  - parent araması = **kurum kısmı** (gürültüsüz → doğru kurum öne çıkar)
+  - **parent-first cascade:** en güçlü parent'a göre subunit'i `parent_id` ile filtrele.
+    **Recall-güvenli:** filtreli + filtresiz sonuçları birleştir (parent yanlışsa doğru subunit kaybolmasın); eşik tahmini YOK.
+  - **sinyaller** (aday başına): `bm25_norm`, `cosine`, `token_set_ratio` (rapidfuzz), `qualifier_conflict`
+- `match` komutu `resolve()` kullanacak şekilde güncellenir. Her adım kendi testiyle.
+
+### 2. Sinyal katmanı tamamlama (F3 kalan)
+Ham BM25 + cosine değerlerini **ayrı** çıkar (şu an RRF sıraya eziyor); gate + LLM'e kanıt olarak.
+
+### 3. Deterministik gate (F3 kalan)
+Çok net → auto adayı, çok çöp (lexical floor düşük) → no_match. **Eşikler F4'ten SONRA, gerçek sette ayarlanır** (körlemesine değil).
+
+### 4. F2 — recall ölçümü  [ETİKET GEREKTİRİR — ertelendi]
+Gerçek etiketli set (~150 pilot → gerekirse 400; LLM ön-etiket + insan onayı). v2 `real_labeled.csv` HATALI, kullanma.
+recall@50 ölç: doğru cevap havuzda mı? Yüksek → karar sorunu (F4'e geç); düşük → retrieval'ı düzelt.
+
+### 5. F4 — LLM hakem  [ANTHROPIC API GEREKTİRİR]
+Adaylar + sinyaller → LLM doğru olanı seçer → `auto_match/review/ambiguous/no_match` + JSON.
+Yetki asimetrisi (LLM düşürür, deterministik kanıt yükseltir) — karar bekliyor.
+
+### 6. F5 — batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü
+
+### Açık kararlar (henüz verilmedi)
+- LLM auto'ya terfi edebilir mi (yetki asimetrisi)?
+- (İÖ) ikizleri: sert-merge mi yumuşak-tercih mi?
+- Batch ölçeği/bütçe?
+- Markersız sorgu decomposition ("hacettepe tıp fakültesi" — "üniversitesi" yok) nasıl?
+
+---
+
+## Neyi kanıtladık (bu oturum, canlı — çıkarımlar)
+
+- Uçtan uca çalışıyor: net kurum-adlı sorguda parent doğru top-1, büyük marj.
+- **Hibrit (BM25+embedding), lexical'e göre subunit eşleşmesini iyileştiriyor**
+  (doğru birim, sadece-kelime sıralamasında geride kalırken anlam eşleşmesiyle öne çıkıyor).
+- **Birleşik-sorgu kirlenmesi gerçek:** sorgu hem kurum hem birim/konum taşıyınca
+  her iki havuz da sapıyor → çözüm decomposition + parent-first cascade (bkz. Sıradaki İşler 1).
 
 ## Nasıl çalıştırılır
 
