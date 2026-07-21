@@ -37,5 +37,49 @@ def build_data_cmd(
     typer.echo(f"cikti: {out_dir}/")
 
 
+@app.command("setup-es")
+def setup_es_cmd() -> None:
+    """ES tek-index mapping + turkish analyzer olusturur (varsa yeniden yaratir)."""
+    from institution_resolver_v3.elastic.client import es_config, get_client
+    from institution_resolver_v3.elastic.indexer import create_index
+
+    client = get_client()
+    index = es_config()["index"]
+    create_index(client, index, recreate=True)
+    typer.echo(f"index olusturuldu: {index}")
+
+
+@app.command("index")
+def index_cmd(
+    processed_dir: Path = typer.Option("data/processed", "--processed-dir"),
+) -> None:
+    """Kanonik JSONL'leri ES'e yukler + force-merge (determinizm)."""
+    from institution_resolver_v3.elastic.indexer import index_data
+
+    res = index_data(
+        processed_dir / "parent_canonical.jsonl",
+        processed_dir / "subunit_canonical.jsonl",
+    )
+    typer.echo(f"index={res['index']}  yuklendi={res['indexed']}  hata={len(res['errors'])}")
+    typer.echo(f"  parent={res['parents']}  subunit={res['subunits']}")
+
+
+@app.command("match")
+def match_cmd(
+    query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
+    top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+) -> None:
+    """Tek sorgu: parent + subunit havuzlarindan top-N aday (F1 lexical)."""
+    from institution_resolver_v3.elastic.search import search
+
+    for rt in ("parent", "subunit"):
+        typer.echo(f"\n=== {rt.upper()} ===")
+        for h in search(query, rt, size=top):
+            extra = ""
+            if rt == "subunit":
+                extra = f"  [{h.get('kind_label_raw')}]  parent={h.get('parent_name','')[:30]}"
+            typer.echo(f"  {h['score']:6.2f}  {h['id']:>8}  {h['name'][:45]}{extra}")
+
+
 if __name__ == "__main__":
     app()
