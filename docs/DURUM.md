@@ -48,8 +48,9 @@ Girdi → NORMALIZE → ELASTICSEARCH (aday havuzu: parent + subunit)
 |---|---|---|
 | **F0** | Kanonik veri (JSONL) + normalize entegrasyonu | ✅ BİTTİ |
 | **F1** | ES tek-index + lexical arama + indexer | ✅ BİTTİ |
-| **F2** | **Gerçek sette recall@k ölç** (darboğaz retrieval mı karar mı?) + parent-first cascade'i retrieve katmanına kur | ⏭️ SIRADA |
-| F3 | Embedding + kNN ekle (e5-base) + sinyal hesabı + deterministik gate | — |
+| **F3 (embedding)** | e5-base embed + hibrit arama (BM25+kNN, RRF) — index'te 231.291 vektör | ✅ BİTTİ |
+| **F2** | **Gerçek sette recall@k ölç** (darboğaz retrieval mı karar mı?) + parent-first cascade'i retrieve katmanına kur | ⏭️ SIRADA (etiketli set ertelendi) |
+| F3 (kalan) | sinyal hesabı (retrieve/) + deterministik gate | — |
 | F4 | LLM hakem katmanı (tek çağrı parse+judge) + doğrulayıcılar + gerçek sette ölç | — |
 | F5 | Batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü | — |
 
@@ -86,6 +87,10 @@ python3 -m pytest tests/unit -q     # 89 test
 
 ## Kritik gerçekler (ham veri, ölçüldü)
 
+- **Parent ve subunit id uzayları ÖRTÜŞÜYOR (55.431 ortak id)** — ES `_id` = `record_type:id`
+  olmalı (ham id verilirse kayıtlar birbirini ezer). Gerçek id `_source.id`'de.
+- **Embedding cache:** `data/processed/embeddings.npz` (679MB, 231.291×768). `index --embeddings`
+  ids eşleşince encode'u atlar (23 dk'lık encode tekrarlanmaz). Encode MPS'te ~22 dk.
 - Parent 106.331 (çoğu **küresel/ROR**, yabancı de var); subunit 179.106 → aktif 138.298.
 - Merge sonrası: parent 106.183 (147 düş, Bilkent 305→150, 3 muaf), subunit 125.108.
 - 24 kind_label değeri. En büyük klon grubu: SBÜ ~174× özdeş.
