@@ -94,3 +94,36 @@ def test_subunit_query_includes_parent_name_field() -> None:
     qp = build_search_query("gazi", "parent")
     fields_p = qp["bool"]["must"][0]["multi_match"]["fields"]
     assert not any(f.startswith("parent_name") for f in fields_p)
+
+
+# --------------------------------------------------------------------------- #
+# hibrit: RRF + kNN kurucu (ES/model gerektirmez)
+# --------------------------------------------------------------------------- #
+from institution_resolver_v3.elastic.search import build_knn_query, rrf_merge
+
+
+def test_knn_query_filters_record_type() -> None:
+    q = build_knn_query([0.1, 0.2], "subunit", k=50, num_candidates=100)
+    assert q["field"] == "embedding"
+    assert q["filter"] == {"term": {"record_type": "subunit"}}
+    assert q["k"] == 50
+
+
+def test_rrf_merge_fuses_two_rank_lists() -> None:
+    bm25 = [{"id": "A"}, {"id": "B"}, {"id": "C"}]
+    knn = [{"id": "B"}, {"id": "A"}, {"id": "D"}]
+    out = rrf_merge([bm25, knn], k=60, size=10)
+    ids = [h["id"] for h in out]
+    # B: 1/62 + 1/61 ; A: 1/61 + 1/62  -> esit; C ve D tek listede
+    assert set(ids) == {"A", "B", "C", "D"}
+    assert ids[0] in {"A", "B"}                # ikisi de iki listede, en ustte
+    assert ids[-1] == "D"                      # id-asc tiebreak: C(2) < D(3) degil...
+    # her aday rrf_score tasir
+    assert all("rrf_score" in h for h in out)
+
+
+def test_rrf_prefers_items_in_both_lists() -> None:
+    bm25 = [{"id": "X"}, {"id": "only_bm"}]
+    knn = [{"id": "X"}, {"id": "only_knn"}]
+    out = rrf_merge([bm25, knn], size=10)
+    assert out[0]["id"] == "X"                 # iki listede de var -> en yuksek

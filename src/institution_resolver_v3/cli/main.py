@@ -52,6 +52,7 @@ def setup_es_cmd() -> None:
 @app.command("index")
 def index_cmd(
     processed_dir: Path = typer.Option("data/processed", "--processed-dir"),
+    embeddings: bool = typer.Option(False, "--embeddings", help="e5 vektorlerini de uret+yukle (F3)"),
 ) -> None:
     """Kanonik JSONL'leri ES'e yukler + force-merge (determinizm)."""
     from institution_resolver_v3.elastic.indexer import index_data
@@ -59,6 +60,7 @@ def index_cmd(
     res = index_data(
         processed_dir / "parent_canonical.jsonl",
         processed_dir / "subunit_canonical.jsonl",
+        with_embeddings=embeddings,
     )
     typer.echo(f"index={res['index']}  yuklendi={res['indexed']}  hata={len(res['errors'])}")
     typer.echo(f"  parent={res['parents']}  subunit={res['subunits']}")
@@ -68,17 +70,20 @@ def index_cmd(
 def match_cmd(
     query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
     top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+    hybrid: bool = typer.Option(False, "--hybrid", help="BM25+kNN (RRF); embedding index gerekir"),
 ) -> None:
-    """Tek sorgu: parent + subunit havuzlarindan top-N aday (F1 lexical)."""
-    from institution_resolver_v3.elastic.search import search
+    """Tek sorgu: parent + subunit havuzlarindan top-N aday."""
+    from institution_resolver_v3.elastic.search import search, search_hybrid
 
+    finder = search_hybrid if hybrid else search
     for rt in ("parent", "subunit"):
-        typer.echo(f"\n=== {rt.upper()} ===")
-        for h in search(query, rt, size=top):
+        typer.echo(f"\n=== {rt.upper()} ({'hibrit' if hybrid else 'lexical'}) ===")
+        for h in finder(query, rt, size=top):
             extra = ""
             if rt == "subunit":
                 extra = f"  [{h.get('kind_label_raw')}]  parent={h.get('parent_name','')[:30]}"
-            typer.echo(f"  {h['score']:6.2f}  {h['id']:>8}  {h['name'][:45]}{extra}")
+            score = h.get("rrf_score", h.get("score", 0.0))
+            typer.echo(f"  {score:8.4f}  {h['id']:>8}  {h['name'][:45]}{extra}")
 
 
 if __name__ == "__main__":

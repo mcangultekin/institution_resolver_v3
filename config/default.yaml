@@ -22,7 +22,7 @@ retrieval:
 embedding:
   model: "intfloat/multilingual-e5-base"
   dim: 768
-  batch_size: 64
+  batch_size: 128           # MPS'te daha iyi throughput (kisa kurum adlari, OOM riski dusuk)
   query_prefix: "query: "
   passage_prefix: "passage: "
 

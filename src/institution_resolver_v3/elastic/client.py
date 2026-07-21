@@ -9,9 +9,9 @@ from elasticsearch import Elasticsearch
 from institution_resolver_v3.config import load_config
 
 
-def get_client(host: str | None = None) -> Elasticsearch:
+def get_client(host: str | None = None, request_timeout: int = 300) -> Elasticsearch:
     cfg = load_config()
-    return Elasticsearch(host or cfg["elasticsearch"]["host"], request_timeout=60)
+    return Elasticsearch(host or cfg["elasticsearch"]["host"], request_timeout=request_timeout)
 
 
 def es_config() -> dict[str, Any]:
