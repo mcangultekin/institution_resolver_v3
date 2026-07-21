@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# Veri: ham + islenmis buyuk dosyalar versiyonlanmaz (raporla yeniden uretilir)
+data/raw/
+data/processed/*.csv
+data/processed/*.jsonl
+data/processed/embeddings*
+# transform_report.json versiyonlanir (kucuk + korpus profili kaniti)
+!data/processed/transform_report.json
+
+# Gercek affiliation ornekleri (kisisel veri) - ASLA commit edilmez
+data/inbox/
+data/eval/*_labeled.csv
+data/eval/*_sample.csv
+
+# LLM cache + sirlar
+.env
+*.cache
+llm_cache/

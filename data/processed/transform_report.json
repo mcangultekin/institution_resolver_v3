@@ -1,0 +1,66 @@
+{
+  "steps": [
+    {
+      "step": "P1_subunit_active_filter",
+      "before": 179106,
+      "after": 138298,
+      "dropped": 40808,
+      "notes": {}
+    },
+    {
+      "step": "P2_parent_orphan_rule",
+      "before": 106331,
+      "after": 106183,
+      "dropped": 147,
+      "notes": {
+        "redirect": [
+          [
+            "305",
+            "150"
+          ]
+        ],
+        "override": [
+          "239",
+          "356",
+          "118"
+        ],
+        "dropped_sample": [
+          "149",
+          "274",
+          "31",
+          "338",
+          "77",
+          "26",
+          "83",
+          "246",
+          "128",
+          "228"
+        ]
+      }
+    },
+    {
+      "step": "P3_clone_merge",
+      "before": 138298,
+      "after": 125108,
+      "dropped": 13190,
+      "notes": {
+        "merged_groups": 5034,
+        "absorbed_rows": 13190
+      }
+    },
+    {
+      "step": "P4_kind_label_parse",
+      "before": 125108,
+      "after": 125108,
+      "dropped": 0,
+      "notes": {
+        "unknown_kind_labels": {}
+      }
+    }
+  ],
+  "totals": {
+    "parent": 106183,
+    "subunit": 125108,
+    "index_total": 231291
+  }
+}

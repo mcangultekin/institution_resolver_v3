@@ -1,0 +1,43 @@
+# Institution Resolver v3 - merkezi ayarlar
+# Not: bir anahtar burada var diye davranis degistirmez; kodda okundugu yer aranir
+# (v2 O6 dersi: okunmayan olu anahtar birakma).
+
+elasticsearch:
+  host: "http://localhost:9200"
+  index: "institutions_v1"       # TEK index (parent + subunit, record_type alaniyla)
+  alias: "institutions"
+
+retrieval:
+  pool_size: 50                  # havuz (recall@50 F2'de olculur)
+  parent_top_k: 5                # LLM'e giden parent aday sayisi
+  subunit_top_k: 10              # kardesler yaristigi icin daha genis
+  rrf:
+    rank_constant: 60            # RRF yalniz havuzlama icin
+  boosts:                        # alan boost'lari (F2'de olculur, sabit degil)
+    unit_name: 3.0
+    unit_name.ascii: 2.0
+    aliases.normalized: 1.5
+    parent_name: 1.0
+
+embedding:
+  model: "intfloat/multilingual-e5-base"
+  dim: 768
+  batch_size: 64
+  query_prefix: "query: "
+  passage_prefix: "passage: "
+
+gate:                            # esikler F3/F4'ten SONRA, gercek sette ayarlanir
+  garbage_lexical_floor: 0.55    # bunun altinda -> no_match
+  clear_win_token_set: 0.95
+  clear_win_margin: 0.15
+
+judge:
+  enabled: false                 # F4'e kadar kapali
+  model: "claude-haiku-4-5-20251001"
+  cache_dir: "llm_cache"
+  auto_confidence: 0.90          # DANISMAN; auto_match tek basina buna dayanmaz (Ayrim 3)
+
+decision:
+  # v3'te esik ormani YOK. Karar verdict + deterministik kanit + dogrulayicilardan cikar.
+  # auto_match kritik kisit: gercek sette kesinlik >= %98 hedefi.
+  auto_precision_target: 0.98
