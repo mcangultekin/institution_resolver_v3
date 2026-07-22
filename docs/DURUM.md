@@ -1,7 +1,7 @@
 # DURUM ve PLAN — Institution Resolver v3
 
 > Bu dosya devamlılık içindir: oturum kapanıp açılsa da (veya yeni bir Claude
-> oturumu) buradan tam bağlamı alır. Güncel tut. Son güncelleme: 2026-07-21.
+> oturumu) buradan tam bağlamı alır. Güncel tut. Son güncelleme: 2026-07-22.
 
 ## Amaç
 
@@ -49,8 +49,9 @@ Girdi → NORMALIZE → ELASTICSEARCH (aday havuzu: parent + subunit)
 | **F0** | Kanonik veri (JSONL) + normalize entegrasyonu | ✅ BİTTİ |
 | **F1** | ES tek-index + lexical arama + indexer | ✅ BİTTİ |
 | **F3 (embedding)** | e5-base embed + hibrit arama (BM25+kNN, RRF) — index'te 231.291 vektör | ✅ BİTTİ |
-| **F2** | **Gerçek sette recall@k ölç** (darboğaz retrieval mı karar mı?) + parent-first cascade'i retrieve katmanına kur | ⏭️ SIRADA (etiketli set ertelendi) |
-| F3 (kalan) | sinyal hesabı (retrieve/) + deterministik gate | — |
+| **retrieve/ katmanı** | `decompose.py` (ES-destekli sınır tespiti) + `resolve.py` (parent-first cascade + sinyaller) | ✅ BİTTİ (bkz. aşağıda) |
+| **F2** | **Gerçek sette recall@k ölç** (darboğaz retrieval mı karar mı?) | ⏭️ SIRADA (etiketli set ertelendi) |
+| F3 (kalan) | deterministik gate | — |
 | F4 | LLM hakem katmanı (tek çağrı parse+judge) + doğrulayıcılar + gerçek sette ölç | — |
 | F5 | Batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü | — |
 
@@ -59,47 +60,67 @@ recall ölç — darboğaz retrieval ise LLM'i düzeltmenin faydası yok.
 
 ## SIRADAKI İŞLER (öncelik sırası, detaylı yol haritası)
 
-### 1. `retrieve/` katmanı — query decomposition + parent-first cascade + sinyaller  [ETİKET/API GEREKTİRMEZ — İLK YAP]
+### 1. `retrieve/` katmanı — query decomposition + parent-first cascade + sinyaller  ✅ BİTTİ
 
-**Neden (canlı denemelerden kanıtlanmış çıkarım):** İKİ yapısal sorun var:
-- **Parent kirlenmesi:** sorgu, kurum adının yanında gürültü (konum bilgisi, birim/fakülte kelimeleri)
-  taşıyınca parent araması sapıyor ve gürültüyle örtüşen yanlış kurumları öne çıkarıyor; parent'ı
-  yalnızca **çıkarılan kurum kısmıyla** aramak bu sapmayı gideriyor.
-- **Subunit sıralaması:** parent çözülüp subunit `parent_id` ile filtrelenince, üniversite token'ı
-  ayırt ediciliğini kaybediyor ve asıl birim adı doğru kaydı üste taşıyor.
+**İlk plan (marker/regex-tabanlı bölme) kullanıcı tarafından reddedildi** ("ilkel ve hatalara
+gebe" — haklı çıktı, gerçek veriyle doğrulandı): `üniversitesi/university/enstitüsü/institute/...`
+gibi sabit bir işaretçi listesiyle sorguyu bölmek iki gerçek veri deseninde kırılıyordu:
+- İngilizce **"X of Y" ters-örüntüsü** ("University of Oxford" — işaretçi kurumun adını
+  BAŞLATIYOR, bitirmiyor). Korpusta ~8.566/106.183 parent (%8) bu örüntüde.
+- Türkçe **bileşik kurum adı** ("Eskişehir Osmangazi Üniversitesi Tıp Fakültesi Hastanesi" —
+  zincirleme birden fazla işaretçi içeren TEK bir kurumun kendi adı, üniversiteye bağlı ama
+  AYRI bir parent kaydı). 15 parent kaydında doğrulandı.
 
-**Yapılacaklar:**
-- `retrieve/decompose.py`: sorguyu **kurum işaretçisiyle** böl (`üniversitesi/university/enstitüsü/
-  institute/hastanesi/koleji/yüksekokulu`...; kısaltma genişletme "üni."→"üniversitesi" zaten var).
-  Kurum kısmı = başından işaretçiye kadar (dahil); birim kısmı = sonrası. **İşaretçi yoksa** tam sorgu (fallback).
-- `retrieve/resolve.py`:
-  - parent araması = **kurum kısmı** (gürültüsüz → doğru kurum öne çıkar)
-  - **parent-first cascade:** en güçlü parent'a göre subunit'i `parent_id` ile filtrele.
-    **Recall-güvenli:** filtreli + filtresiz sonuçları birleştir (parent yanlışsa doğru subunit kaybolmasın); eşik tahmini YOK.
-  - **sinyaller** (aday başına): `bm25_norm`, `cosine`, `token_set_ratio` (rapidfuzz), `qualifier_conflict`
-- `match` komutu `resolve()` kullanacak şekilde güncellenir. Her adım kendi testiyle.
+**Uygulanan çözüm — kural yazmak yerine korpusa sorma (ES-destekli sınır tespiti):**
+`retrieve/decompose.py` sorgunun her olası kesim noktasını dener, her aday parça için ES'te
+(BM25) en yakın parent'ı bulur, `rapidfuzz.fuzz.ratio` (uzunluk-duyarlı düz oran —
+`token_set_ratio` DEĞİL, o fazla/eksik kelimeye tolerans gösterdiği için sınırı ayırt edemiyordu)
+ile "bu parça gerçek bir kurum adına ne kadar tam örtüşüyor" diye ölçer; en yüksek skoru veren
+kesim noktası kurum sınırı sayılır (eşitlikte daha uzun parça tercih edilir — bileşik ad durumunu
+doğru çözer). Eşik YOK; düşük güvenli bölme bile zarar vermez çünkü cascade her zaman filtresiz
+aramayı da tutar (aşağıda). **Mimari sonuç:** `decompose()` artık saf/ES-bağımsız değil (ama
+`search_fn` enjekte edilebilir, testler gerçek ES gerektirmez). Doğrulama: `tests/unit/test_decompose.py`
+(6 test) + canlı ES'te manuel doğrulama (Gazi/Ankara/Eskişehir/Oxford/gürültülü-sorgu/sadece-birim
+senaryoları hepsi doğru ayrıştı).
 
-### 2. Sinyal katmanı tamamlama (F3 kalan)
-Ham BM25 + cosine değerlerini **ayrı** çıkar (şu an RRF sıraya eziyor); gate + LLM'e kanıt olarak.
+`retrieve/resolve.py`:
+- parent araması = `decomposed.institution_part`
+- **parent-first cascade:** en güçlü parent'ın `parent_id`'siyle subunit'i filtrele; **recall-güvenli**
+  birleşim (`_merge_filtered_first`): filtreli sonuçlar önce (`passed_parent_filter=True`), filtresizde
+  olup filtrelide olmayanlar sona eklenir (parent yanlışsa doğru subunit kaybolmaz, sadece geriye düşer).
+- **sinyaller** (aday başına, `ScoredCandidate`): `bm25_norm` (ham BM25, sorgu-içi max'a bölünerek
+  [0,1]), `cosine` (ES kNN skorundan `2*es_score-1` ile geri çıkarılır — `similarity=cosine` mapping),
+  `token_set_ratio` (rapidfuzz), `qualifier_conflict` (var olan `normalize.qualifiers` fonksiyonu).
+  BM25+kNN artık RRF'den ÖNCE ayrı ayrı da tutuluyor (RRF sadece havuzlama/sıralama için) — eski
+  "F3 kalan: ham skorları ayrı çıkar" maddesi bu adımda birlikte çözüldü.
+- `match` komutu `resolve()` kullanıyor (decompose satırı + sinyal sütunları + `[P]` parent-filtre
+  bayrağı gösterir). `--hybrid` bayrağı kaldırıldı (resolve() her zaman BM25+kNN kullanıyor).
+- `normalize/query_pipeline.py`'deki kullanılmayan `strip_subunit_only_terms` (eski, sabit-liste
+  tabanlı denemenin kalıntısı) silindi — `decompose()` onun yerini aldı.
 
-### 3. Deterministik gate (F3 kalan)
+Ölçüm: `docker/` ES ayaktayken CLI ile canlı doğrulandı — bkz. `inres3 match "..."`. Tüm testler
+(108) yeşil. **Henüz gerçek etiketli sette recall ölçülmedi** (F2, aşağıda) — bu sadece canlı
+örnek/manuel doğrulama, sistematik değil.
+
+### 2. Deterministik gate (F3 kalan)
 Çok net → auto adayı, çok çöp (lexical floor düşük) → no_match. **Eşikler F4'ten SONRA, gerçek sette ayarlanır** (körlemesine değil).
 
-### 4. F2 — recall ölçümü  [ETİKET GEREKTİRİR — ertelendi]
+### 3. F2 — recall ölçümü  [ETİKET GEREKTİRİR — ertelendi]
 Gerçek etiketli set (~150 pilot → gerekirse 400; LLM ön-etiket + insan onayı). v2 `real_labeled.csv` HATALI, kullanma.
 recall@50 ölç: doğru cevap havuzda mı? Yüksek → karar sorunu (F4'e geç); düşük → retrieval'ı düzelt.
 
-### 5. F4 — LLM hakem  [ANTHROPIC API GEREKTİRİR]
+### 4. F4 — LLM hakem  [ANTHROPIC API GEREKTİRİR]
 Adaylar + sinyaller → LLM doğru olanı seçer → `auto_match/review/ambiguous/no_match` + JSON.
 Yetki asimetrisi (LLM düşürür, deterministik kanıt yükseltir) — karar bekliyor.
 
-### 6. F5 — batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü
+### 5. F5 — batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü
 
 ### Açık kararlar (henüz verilmedi)
 - LLM auto'ya terfi edebilir mi (yetki asimetrisi)?
 - (İÖ) ikizleri: sert-merge mi yumuşak-tercih mi?
 - Batch ölçeği/bütçe?
-- Markersız sorgu decomposition ("hacettepe tıp fakültesi" — "üniversitesi" yok) nasıl?
+- `decompose()`'un ürettiği T ES-round-trip'i (sorgu token sayısı kadar) F5 batch ölçeğinde
+  performans sorunu olur mu — olursa ES `_msearch` ile batch'lenebilir (henüz gerekmedi).
 
 ---
 
@@ -128,7 +149,7 @@ inres3 index             # 231K kaydı yükle + force-merge
 inres3 match "gazi üniversitesi istatistik bölümü"
 
 # testler
-python3 -m pytest tests/unit -q     # 89 test
+python3 -m pytest tests/unit -q     # 108 test
 ```
 
 ## Kritik gerçekler (ham veri, ölçüldü)
@@ -147,7 +168,10 @@ python3 -m pytest tests/unit -q     # 89 test
 - `ingest/canonicalize.py` — P1-P4 saf fonksiyonlar (+ orchestrator `run_pipeline`)
 - `ingest/build.py` + `cli` `build-data` — JSONL üretimi
 - `normalize/query_pipeline.py` — normalize/expand (v2'den, `text_eski.py` eski deneme)
-- `elastic/mappings.py` `document.py` `search.py` — ES katmanı
+- `elastic/mappings.py` `document.py` `search.py` — ES katmanı (`search`/`search_knn`/`search_hybrid`,
+  `extra_filters` ile parent_id cascade filtresi destekler)
+- `retrieve/decompose.py` — ES-destekli kurum/birim sınır tespiti (kural değil, korpusa sorma)
+- `retrieve/resolve.py` — parent-first cascade + sinyaller (`ScoredCandidate`)
 - `docs/V3_BASLANGIC_REHBERI.md` `V3_VERI_PLANI.md` — orijinal tasarım (ilham, şartname değil)
 
 ## Çalışma tarzı (önemli)

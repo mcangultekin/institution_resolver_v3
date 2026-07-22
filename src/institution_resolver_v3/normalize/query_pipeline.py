@@ -150,52 +150,12 @@ def clean_punctuation(text: str) -> str:
 # --------------------------------------------------------------------------
 # 5) Sorgu/embed metni icin yapi-koruyan genisletme
 # --------------------------------------------------------------------------
-# --------------------------------------------------------------------------
-# 5b) Parent-sorgusuna ozel: alt-birim-ozgu kelimeleri dusurme (K4, 2B.2)
-# --------------------------------------------------------------------------
-# 285K korpus taramasi (bkz. EXPERIMENTS.md "2B.2 IDF sismesi denemeleri")
-# bu kelimelerin PARENT kayitlarinin display_name'inde SIFIR kez gectigini
-# dogruladi (FAKÜLTESİ, HASTANESİ, BÖLÜMÜ, ANABİLİM/DALI, PROGRAMI) - yani
-# bunlari PARENT sorgusundan dusurmek hicbir gercek parent eslesmesini
-# riske atmiyor. Kok neden: bu kelimeler parent index'te NADIR (dusuk
-# dokuman frekansi) oldugu icin BM25 IDF'i suni sekilde sisiyor - "ankara
-# üniversitesi tıp fakültesi" sorgusunda "tıp"/"fakültesi" iceren HERHANGI
-# bir parent (ör. "X Üniversitesi Tıp Fakültesi Hastanesi" gibi bir HASTANE
-# parent kaydi) "ankara üniversitesi"nin kendisinden DAHA YUKSEK BM25 skoru
-# alabiliyordu (bkz. REVIEW_RAPORU.md K4). `ENSTİTÜSÜ`/`YÜKSEKOKULU`/`MESLEK`
-# BILEREK bu listeye ALINMADI - bunlar sirasiyla 3/18/18 parent kaydinda
-# GERCEKTEN geçiyor (bazi parent'lar dogrudan "X Enstitüsü" gibi adlandirilmis),
-# dusurulurse o parent'lari bulma sansi azalirdi.
-_PARENT_SUBUNIT_ONLY_TERMS = frozenset(
-    {
-        "fakultesi", "fakulte",
-        "hastanesi", "hastane",
-        "bolumu", "bolum",
-        "anabilim", "dali",
-        "programi",
-    }
-)
-
-
-def strip_subunit_only_terms(text: str) -> str:
-    """PARENT sorgusuna ozel: `_PARENT_SUBUNIT_ONLY_TERMS`teki kelimeleri
-    (aksan/buyuk-kucuk-harf duyarsiz) sorgudan cikarir.
-
-    Yalnizca `elastic.search.search_parents`in LEXICAL (BM25) sorgusunda
-    kullanilir - kNN embedding sorgusu (zaten onceden hesaplanmis vektor)
-    VE subunit sorgusu ETKILENMEZ (bu kelimeler subunit'te anlamli/gerekli).
-    Tum tokenlar silinirse (aşırı kısa sorgu) orijinal metin KORUNUR - bos
-    sorgu ES'e gonderilmemeli.
-    """
-    tokens = text.split()
-    kept = [
-        tok
-        for tok in tokens
-        if strip_turkish_accents(turkish_lower(tok.strip(".,;:()[]{}\"'"))) not in _PARENT_SUBUNIT_ONLY_TERMS
-    ]
-    if not kept:
-        return text
-    return " ".join(kept)
+# (5b) Parent-sorgusundan alt-birim-ozgu kelimeleri sabit bir listeyle dusurme
+# denemesi buradaydi (K4, 2B.2) - `retrieve.decompose.decompose()` bunun
+# YERINE gecti: sabit kelime listesi yerine ES'in kendisine sorup kurum
+# sinirini ampirik tespit ediyor (bkz. decompose.py docstring'i - Ingilizce
+# "University of X" ters-oruntusunde ve Turkce bilesik kurum adlarinda bu
+# sabit-liste yaklasimi yetersiz kaliyordu).
 
 
 def expand_query_text(text: str, locale: str | None = None) -> str:

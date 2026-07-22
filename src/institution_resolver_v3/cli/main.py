@@ -70,20 +70,33 @@ def index_cmd(
 def match_cmd(
     query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
     top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
-    hybrid: bool = typer.Option(False, "--hybrid", help="BM25+kNN (RRF); embedding index gerekir"),
 ) -> None:
-    """Tek sorgu: parent + subunit havuzlarindan top-N aday."""
-    from institution_resolver_v3.elastic.search import search, search_hybrid
+    """Tek sorgu: decompose + parent-first cascade + sinyaller (retrieve.resolve)."""
+    from institution_resolver_v3.retrieve.resolve import resolve
 
-    finder = search_hybrid if hybrid else search
-    for rt in ("parent", "subunit"):
-        typer.echo(f"\n=== {rt.upper()} ({'hibrit' if hybrid else 'lexical'}) ===")
-        for h in finder(query, rt, size=top):
-            extra = ""
-            if rt == "subunit":
-                extra = f"  [{h.get('kind_label_raw')}]  parent={h.get('parent_name','')[:30]}"
-            score = h.get("rrf_score", h.get("score", 0.0))
-            typer.echo(f"  {score:8.4f}  {h['id']:>8}  {h['name'][:45]}{extra}")
+    result = resolve(query, size=top)
+    d = result.decomposed
+    typer.echo(f"decompose: kurum={d.institution_part!r}  birim={d.unit_part!r}  guven={d.boundary_score:.1f}")
+
+    def _cos(c) -> str:
+        return f"{c.cosine:+.3f}" if c.cosine is not None else "   —  "  # None = kNN top-K'ya girmedi
+
+    typer.echo("\n=== PARENT ===")
+    for c in result.parents:
+        typer.echo(
+            f"  bm25={c.bm25_norm:.3f}  cos={_cos(c)}  tsr={c.token_set_ratio:5.1f}  "
+            f"{c.id:>8}  {c.name[:45]}"
+        )
+
+    typer.echo("\n=== SUBUNIT ===")
+    for c in result.subunits:
+        flag = "P" if c.passed_parent_filter else " "
+        conflict = "!" if c.qualifier_conflict else " "
+        extra = f"  parent={c.raw.get('parent_name', '')[:25]}"
+        typer.echo(
+            f"  [{flag}{conflict}] bm25={c.bm25_norm:.3f}  cos={_cos(c)}  tsr={c.token_set_ratio:5.1f}  "
+            f"{c.id:>8}  {c.name[:40]}{extra}"
+        )
 
 
 if __name__ == "__main__":

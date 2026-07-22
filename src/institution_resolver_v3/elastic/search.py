@@ -22,12 +22,20 @@ _PARENT_FIELDS = ["name^3", "name.ascii^2", "aliases_text^1.5", "aliases_text.as
 _SUBUNIT_FIELDS = _PARENT_FIELDS + ["parent_name^1.5", "parent_name.ascii"]
 
 
-def build_search_query(text: str, record_type: str) -> dict[str, Any]:
-    """Lexical bool sorgusu (ES gerektirmez - testlenebilir)."""
+def build_search_query(
+    text: str, record_type: str, *, extra_filters: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Lexical bool sorgusu (ES gerektirmez - testlenebilir).
+
+    `extra_filters`: ek terim filtreleri (ör. parent-first cascade icin
+    `{"term": {"parent_id": "..."}}`) - skor'u etkilemez, sadece havuzu daraltir.
+    """
     fields = _SUBUNIT_FIELDS if record_type == "subunit" else _PARENT_FIELDS
+    filters: list[dict[str, Any]] = [{"term": {"record_type": record_type}}]
+    filters.extend(extra_filters or [])
     return {
         "bool": {
-            "filter": [{"term": {"record_type": record_type}}],
+            "filter": filters,
             "must": [
                 {
                     "multi_match": {
@@ -47,6 +55,7 @@ def search(
     text: str,
     record_type: str,
     *,
+    extra_filters: list[dict[str, Any]] | None = None,
     client: Elasticsearch | None = None,
     index: str | None = None,
     size: int = 50,
@@ -58,7 +67,7 @@ def search(
     resp = client.search(
         index=index,
         size=size,
-        query=build_search_query(prepared, record_type),
+        query=build_search_query(prepared, record_type, extra_filters=extra_filters),
         sort=[{"_score": {"order": "desc"}}, {"id": {"order": "asc"}}],  # determinizm
     )
     return [{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
@@ -68,16 +77,49 @@ def search(
 # Hibrit: BM25 + kNN, RRF ile havuzlanir (RRF SADECE havuzlama - v3 karari)
 # --------------------------------------------------------------------------- #
 def build_knn_query(
-    query_vector: list[float], record_type: str, *, k: int, num_candidates: int
+    query_vector: list[float],
+    record_type: str,
+    *,
+    k: int,
+    num_candidates: int,
+    extra_filters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """kNN blogu (record_type filtreli) - ES gerektirmez, testlenebilir."""
+    filters: list[dict[str, Any]] = [{"term": {"record_type": record_type}}]
+    filters.extend(extra_filters or [])
+    knn_filter = filters[0] if len(filters) == 1 else {"bool": {"filter": filters}}
     return {
         "field": "embedding",
         "query_vector": query_vector,
         "k": k,
         "num_candidates": num_candidates,
-        "filter": {"term": {"record_type": record_type}},
+        "filter": knn_filter,
     }
+
+
+def search_knn(
+    text: str,
+    record_type: str,
+    *,
+    extra_filters: list[dict[str, Any]] | None = None,
+    client: Elasticsearch | None = None,
+    index: str | None = None,
+    size: int = 50,
+) -> list[dict[str, Any]]:
+    """Ham kNN (embedding) havuzu - `search()`in kNN karsiligi, RRF'den ONCE ham skor icin."""
+    from institution_resolver_v3.embedding.query_encoder import encode_query
+
+    client = client or get_client()
+    index = index or es_config()["index"]
+    qvec = encode_query(text).tolist()
+    resp = client.search(
+        index=index,
+        size=size,
+        knn=build_knn_query(
+            qvec, record_type, k=size, num_candidates=max(100, size * 2), extra_filters=extra_filters
+        ),
+    )
+    return [{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
 
 
 def rrf_merge(
@@ -110,24 +152,16 @@ def search_hybrid(
     text: str,
     record_type: str,
     *,
+    extra_filters: list[dict[str, Any]] | None = None,
     client: Elasticsearch | None = None,
     index: str | None = None,
     size: int = 50,
 ) -> list[dict[str, Any]]:
     """BM25 + kNN havuzlarini RRF ile birlestirir. Sorgu vektoru e5 ile kodlanir."""
-    from institution_resolver_v3.embedding.query_encoder import encode_query
-
     client = client or get_client()
     index = index or es_config()["index"]
 
-    bm25 = search(text, record_type, client=client, index=index, size=size)
-
-    qvec = encode_query(text).tolist()
-    knn_resp = client.search(
-        index=index,
-        size=size,
-        knn=build_knn_query(qvec, record_type, k=size, num_candidates=max(100, size * 2)),
-    )
-    knn = [{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in knn_resp["hits"]["hits"]]
+    bm25 = search(text, record_type, extra_filters=extra_filters, client=client, index=index, size=size)
+    knn = search_knn(text, record_type, extra_filters=extra_filters, client=client, index=index, size=size)
 
     return rrf_merge([bm25, knn], size=size)
