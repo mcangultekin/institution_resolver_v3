@@ -155,14 +155,29 @@ Yetki asimetrisi (LLM düşürür, deterministik kanıt yükseltir) — karar be
 
 ### 5. F5 — batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü
 
-### Aday iyileştirme — kanıt bekliyor (kullanıcı fikri, 2026-07-23)
-Subunit havuzuna EK recall kanalı: kurum sorgunun ortasındayken hipotezin
-SOL ve SAĞ artıkları ayrı ayrı aranıp (BM25+kNN) recall-güvenli birleşime
-katılabilir. Gerekçe: tam-sorgu araması uzun/gürültülü sorgularda seyreliyor
-(BM25 ve embedding sulanması); iki artığı tek dizgeye yapıştırmak embedding
-vektörünü bulandırır. Maliyet: hipotez başına +2 arama + havuza gürültü.
-**Eklemeden önce kanıt:** 30-sorgu setinde sol/sağ kolun, tam-sorgu kolunun
-kaçırdığı doğru subunit'i yakaladığı vaka var mı ölçülecek (prototip).
+### Aday iyileştirme — sol/sağ artık kanalı (kullanıcı fikri) → ÖLÇÜLDÜ, EKLENMEDİ (2026-07-23)
+Fikir: kurum sorgunun ortasındayken hipotezin SOL ve SAĞ artıkları ayrı ayrı
+aranıp (BM25+kNN) subunit havuzuna katılsın (tam-sorgu araması uzun sorgularda
+seyreliyor; iki artığı yapıştırmak embedding'i bulandırır).
+
+**Prototip ölçümü (30-sorgu seti, kod tabanına dokunmadan):** sol/sağ kolların
+mevcut havuzun (tam-sorgu, top-10) DIŞINDA getirdiği yeni adaylar sorgu sorgu
+gözle değerlendirildi. Sonuç:
+- 27-28/30: yeni adayların tamamı AYNI ADLI birimin BAŞKA üniversitelerdeki
+  kopyaları (sistematik gürültü deseni). Kök neden: artık parçada parent adı
+  kalmıyor → subunit belgelerindeki parent_name enjeksiyonu çıpası kayboluyor,
+  sonuçlar tüm üniversitelere saçılıyor. Tam-sorgu kolu bu çıpayı koruduğu
+  için doğru cevap zaten 24+/30'da havuzdaydı; sol/sağ hiçbirinde kaçağı
+  kurtarmadı.
+- 1/30 sınır kazanımı (#30 Afyon): sorgu "Afyon Kocatepe Üniv. Tıp Fak.
+  Anesteziyoloji..." diyor ama AKÜ Tıp gerçekte AFYONKARAHİSAR SAĞLIK BİLİMLERİ
+  ÜNİVERSİTESİ'ne ayrılmış — doğru birim (Anesteziyoloji AD ← AFSBÜ) baseline
+  top-10'da yok, SAĞ kolu getirdi. Bu "kurum yeniden yapılanması" vaka sınıfı
+  gerçek ama sol/sağ kanalın genel gürültü maliyetini (sorgu başına +2-4 arama
+  + havuza ~5-10 çöp aday → hakem token maliyeti) karşılamıyor.
+**Karar: standart kanal olarak EKLENMEDİ.** Yeniden-yapılanma sınıfı için not:
+hakem "havuzda doğru yok" dediğinde ikinci-tur parent'sız birim araması
+(fallback) daha hedefli bir çözüm olabilir — F4 sonrası değerlendirilecek.
 
 ### Açık kararlar (henüz verilmedi)
 - LLM auto'ya terfi edebilir mi (yetki asimetrisi)?
