@@ -26,16 +26,24 @@ kismi nerede bitiyor" sorusunun cevabini indeksin kendisinden aliyoruz.
 
 YONTEM
 ------
-Sorgunun her olasi kesim noktasini dene (1 token, 2 token, ... tum tokenlar).
+Sorgunun her olasi ARDISIK ALT-DIZGESINI dene (sadece 0'dan baslayan onekler
+DEGIL - her `(start, end)` araligi: tek kelimeler dahil, tum kombinasyonlar).
+Ilk surum sadece onekleri deniyordu ("kurum kismi hep basta" varsayimi) -
+bu, birim once yazilan sorgularda ("istatistik bolumu gazi universitesi")
+tamamen kirildi: hicbir onek "gazi universitesi"ye tam oturamadigi icin
+sinir hic bulunamiyor, tum sorgu tek parca kaliyordu. Alt-dizge taramasi bu
+varsayimi da kaldirir - kurum adi sorgunun basinda, sonunda ya da ortasinda
+olabilir, hepsi ayni mekanizmayla denenir.
+
 Her aday parca icin ES'te (BM25, ucuz - embedding YOK) en yakin parent'lari
 bul, `rapidfuzz.fuzz.ratio` (uzunluk-duyarli DUZ oran - `token_set_ratio`
 DEGIL, o fazla/eksik kelimeye goz yumdugu icin siniri ayirt edemiyor, bkz.
 asagidaki not) ile aday parcanin bulunan parent adina NE KADAR TAM ORTUSTUGUNU
-olc. Hangi kesim noktasi bir gercek parent adina neredeyse birebir (~100)
-uyuyorsa, kurum siniri orasi - kurum adinin kendisi kadar uzayip kendisinden
-fazla uzamiyor. Testlerde (bkz. tests/unit/test_decompose.py) hem Ingilizce
-"of" oruntusu hem Turkce bilesik ad hem de "hicbir kurum yok" durumu (duz
-skorlarin hicbiri 100'e yaklasmiyor) dogru sekilde ayirt edildi.
+olc. Hangi aralik bir gercek parent adina neredeyse birebir (~100) uyuyorsa,
+kurum siniri orasi - kurum adinin kendisi kadar uzayip kendisinden fazla
+uzamiyor. Testlerde (bkz. tests/unit/test_decompose.py) hem Ingilizce "of"
+oruntusu hem Turkce bilesik ad hem birim-once hem de "hicbir kurum yok"
+durumu (duz skorlarin hicbiri 100'e yaklasmiyor) dogru sekilde ayirt edildi.
 
 `token_set_ratio` DEGIL `ratio` kullanma nedeni: `token_set_ratio` fazla/eksik
 kelimeye tolerans gosterir (kesisim tam ise 100 dondurur, adayin FAZLADAN
@@ -43,12 +51,25 @@ kelimesi olsa bile) - bu da her kesim noktasinin ayni sekilde 100 almasina
 (hicbir ayirt edicilik kalmamasina) yol aciyordu. `ratio` uzunluk farkina
 duyarli oldugu icin dogru sinirda net bir PIK olusuyor.
 
-Esiksiz: en yuksek skoru veren kesim noktasi secilir (esitlikte DAHA UZUN
-parca tercih edilir - bilesik ad durumunu doguru cozer). Hicbir zorlama esik
+Esiksiz: en yuksek skoru veren aralik secilir (esitlikte DAHA UZUN aralik
+tercih edilir - bilesik ad durumunu dogru cozer: "Eskisehir Osmangazi
+Universitesi" (kisa aralik) ile "...Universitesi Tip Fakultesi Hastanesi"
+(tum sorgu) ayni 100 skoru alabilir, uzun olan kazanir). Hicbir zorlama esik
 YOK (esik tahmini icin etiketli set gerekiyor, bkz. docs/DURUM.md calisma
 tarzi) - dusuk-guven bir bolme bile zarar vermez, cunku cagiran taraf
 (retrieve/resolve.py) HER ZAMAN filtresiz aramayi da tutup birlestirir
 (recall-guvenli cascade).
+
+Maliyet: n token icin onek-taramasi n ES cagrisi yapiyordu, alt-dizge
+taramasi n(n+1)/2 yapar (10 token -> 55 cagri). Sorgular kisa oldugu icin
+(<=512 karakter, tipik <=10-15 token) kabul edilebilir; batch olcegindeki
+etkisi F5'te olculecek (docs/DURUM.md acik karar).
+
+`unit_part` artik kurum araliginin DISINDA KALAN iki parcanin (once + sonra)
+birlesimi olabilir - kurum sorgunun ortasinda bulunursa sira bilgisi
+`unit_part` tek dizgesinde kaybolur, ama bu alan zaten sadece CLI
+gosterimi/hata ayiklama icin kullaniliyor (resolve() parent aramasi disinda
+tuketmiyor).
 
 Not: decompose artik SAF DEGIL, ES'e bagimli (arama fonksiyonu enjekte
 edilir - testlerde sahte/mock search_fn kullanilir, gercek ES gerekmez).
@@ -112,27 +133,35 @@ def decompose(
         )
 
     norm_tokens = [normalize(tok).base_no_accent for tok in surface_tokens]
+    n = len(surface_tokens)
 
     best_score = -1.0
-    best_i = len(surface_tokens)
+    best_length = -1
+    best_start = 0
+    best_end = n
     best_name: str | None = None
     best_id: str | None = None
 
-    for i in range(1, len(surface_tokens) + 1):
-        candidate_surface = " ".join(surface_tokens[:i])
-        candidate_norm = " ".join(norm_tokens[:i])
-        hits = search_fn(candidate_surface, "parent")[:top_k]
-        for hit in hits:
-            hit_norm = normalize(hit.get("name", "") or "").base_no_accent
-            score = fuzz.ratio(candidate_norm, hit_norm)
-            if score >= best_score:  # >= : esitlikte daha UZUN parcayi tercih et
-                best_score = score
-                best_i = i
-                best_name = hit.get("name")
-                best_id = hit.get("id")
+    for start in range(n):
+        for end in range(start + 1, n + 1):
+            length = end - start
+            candidate_surface = " ".join(surface_tokens[start:end])
+            candidate_norm = " ".join(norm_tokens[start:end])
+            hits = search_fn(candidate_surface, "parent")[:top_k]
+            for hit in hits:
+                hit_norm = normalize(hit.get("name", "") or "").base_no_accent
+                score = fuzz.ratio(candidate_norm, hit_norm)
+                # esitlikte DAHA UZUN araligi tercih et (bilesik ad durumu)
+                if score > best_score or (score == best_score and length > best_length):
+                    best_score = score
+                    best_length = length
+                    best_start = start
+                    best_end = end
+                    best_name = hit.get("name")
+                    best_id = hit.get("id")
 
-    institution_part = " ".join(surface_tokens[:best_i])
-    unit_part = " ".join(surface_tokens[best_i:])
+    institution_part = " ".join(surface_tokens[best_start:best_end])
+    unit_part = " ".join(surface_tokens[:best_start] + surface_tokens[best_end:])
     return DecomposedQuery(
         institution_part=institution_part,
         unit_part=unit_part,

@@ -58,6 +58,21 @@ class TestDecompose:
         assert result.unit_part == ""
         assert result.matched_parent_id == "3"
 
+    def test_unit_before_institution(self):
+        # Kullanici raporu: birim once yazilirsa onek-taramasi hic bolemiyordu
+        # (tum sorgu tek parca kaliyordu). Alt-dizge taramasi bunu cozer.
+        result = decompose("istatistik bölümü gazi üniversitesi", search_fn=_fake_search)
+        assert result.institution_part == "gazi üniversitesi"
+        assert result.unit_part == "istatistik bölümü"
+        assert result.matched_parent_id == "101"
+        assert result.boundary_score > 95
+
+    def test_unit_before_institution_single_word(self):
+        result = decompose("fen fakültesi gazi üniversitesi", search_fn=_fake_search)
+        assert result.institution_part == "gazi üniversitesi"
+        assert result.unit_part == "fen fakültesi"
+        assert result.matched_parent_id == "101"
+
     def test_no_institution_in_query_yields_low_confidence(self):
         result = decompose("istatistik bölümü", search_fn=_fake_search)
         assert result.boundary_score < 90
