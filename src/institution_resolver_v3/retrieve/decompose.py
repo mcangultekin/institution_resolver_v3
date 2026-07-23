@@ -60,6 +60,23 @@ tarzi) - dusuk-guven bir bolme bile zarar vermez, cunku cagiran taraf
 (retrieve/resolve.py) HER ZAMAN filtresiz aramayi da tutup birlestirir
 (recall-guvenli cascade).
 
+KARAR DEGIL HIPOTEZ (2026-07-23 revizyonu)
+------------------------------------------
+decompose TEK sinir SECMEZ - farkli parent'lara isaret eden en iyi
+MAX_HYPOTHESES sinir hipotezini birlikte dondurur (`hypotheses`, skor sirali;
+birincil alanlar = hypotheses[0], geriye donuk uyumlu). Neden: fuzz.ratio
+salt karakter benzerligi - kisa+tesadufi ortusme, uzun+dogru parcayi
+gecebiliyor (kanitli ornek: "Department of Educational" penceresi, alakasiz
+"Department of Education" (K. Irlanda) kaydina 95.8 alip dogru cevabi
+"Hacettepe University"yi (90.5) yendi - bkz.
+docs/DENEY_2026-07-23_parent_dogrulama.md). Tek sert karar bu hatayi zincirin
+sonuna tasiyordu; hipotez listesi ile SECIMI asagi katmanlar (recall-yonelimli
+birlesim -> LLM hakem) yapar, decompose hatasi olumcul olmaktan cikip havuza
+gurultu eklemekle sinirlanir. Ayni gun denenen "decompose icinde subunit
+kanitiyla dogrulama/secim" yaklasimi 50 sorguluk testte yeni yanlilik ekledigi
+icin geri alinmisti - hipotezler SIRALANIR ama burada asla ELENMEZ/yeniden
+secilmez, o deneyin tuzagi tekrarlanmaz.
+
 Maliyet: n token icin onek-taramasi n ES cagrisi yapiyordu, alt-dizge
 taramasi n(n+1)/2 yapar (10 token -> 55 cagri). Sorgular kisa oldugu icin
 (<=512 karakter, tipik <=10-15 token) kabul edilebilir; batch olcegindeki
@@ -77,7 +94,7 @@ edilir - testlerde sahte/mock search_fn kullanilir, gercek ES gerekmez).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from rapidfuzz import fuzz
@@ -87,17 +104,49 @@ from institution_resolver_v3.normalize.query_pipeline import expand_query_text, 
 SearchFn = Callable[[str, str], list[dict[str, Any]]]
 
 
-@dataclass
-class DecomposedQuery:
-    """Sorgu ayristirma sonucu.
+def _name_variants(hit: dict[str, Any]) -> list[str]:
+    """Sinir skorunda denenecek ad varyantlari: name + alias'lar + virgul-segmentleri.
 
-    institution_part: kurum adi oldugu tahmin edilen kisim (parent aramasinda kullanilir).
-    unit_part: geri kalan kisim (bos olabilir - kurum disinda birim bilgisi yoksa
-               ya da tum sorgu zaten kurumun kendi (bilesik) adiysa).
-    boundary_score: secilen sinirin rapidfuzz.fuzz.ratio guven skoru (0-100).
-                    Dusuk skor = sorguda net bir kurum adi bulunamadi (esik
-                    YOK, cagiran taraf yorumlar - bkz. modul docstring'i).
-    matched_parent_name / matched_parent_id: sinira karar verdiren gercek parent kaydi.
+    Ham veride bazi alias'lar virgulle birlesmis BIRDEN FAZLA ad tasiyor
+    ("Universitaet Muenster, Westfälische Wilhelms-Universität Münster" TEK
+    alias - canli dogrulandi, parent:12928); birlesik dizgeye karsi ratio
+    dusuk kaldigi icin dogru hipotez dogamiyordu. Segmentler EK varyant olarak
+    denenir (butun de kalir). Tek kelimelik segmentler ALINMAZ: "Jastec Co.,
+    Ltd. (Japan)" gibi adlardan kopan "Ltd." parcasi, "ltd" iceren sorgularda
+    100'luk tesadufi cekim merkezi olurdu (bilinen tuzak sinifi, bkz.
+    docs/DENEY_2026-07-23_parent_dogrulama.md).
+    """
+    out: list[str] = []
+    base = [hit.get("name", "") or ""]
+    base.extend(hit.get("aliases") or [])
+    for v in base:
+        if not v:
+            continue
+        out.append(v)
+        if "," in v:
+            for seg in v.split(","):
+                seg = seg.strip()
+                if seg and len(seg.split()) >= 2:
+                    out.append(seg)
+    return out
+
+# Farkli parent'lara isaret eden en fazla kac sinir hipotezi dondurulur
+# (bkz. modul docstring'i "KARAR DEGIL HIPOTEZ").
+# 3 -> 5 (2026-07-23): alias-farkindalikli skorla tek-tokenlik pencereler
+# akronim alias'larina tesadufen 100 alabiliyor ("Ana" -> "ANA Aeroportos",
+# canli dogrulandi) ve dogru coklu-token hipotezini (~86) top-3 disina
+# itebiliyor. "Akronim gercek mi tesadufi mi" ayrimi formdan yapilamaz - o
+# secim LLM hakemin isi; burada tek gorev dogru hipotezi LISTEDE TUTMAK.
+MAX_HYPOTHESES = 5
+
+
+@dataclass
+class BoundaryHypothesis:
+    """Tek bir sinir hipotezi: 'kurum kismi bu aralik olabilir' + kanit.
+
+    institution_part / unit_part: bu hipoteze gore bolme.
+    boundary_score: rapidfuzz.fuzz.ratio (0-100) - hipotezin kaniti.
+    matched_parent_name / matched_parent_id: hipotezi ureten gercek parent kaydi.
     """
 
     institution_part: str
@@ -107,17 +156,42 @@ class DecomposedQuery:
     matched_parent_id: str | None
 
 
+@dataclass
+class DecomposedQuery:
+    """Sorgu ayristirma sonucu.
+
+    hypotheses: farkli parent'lara isaret eden en iyi MAX_HYPOTHESES sinir
+                hipotezi, skor sirali (esitlikte uzun aralik, sonra ilk
+                gorulen). SECIM burada yapilmaz - tuketici (resolve/LLM hakem)
+                hipotezlerin hepsini degerlendirir.
+    institution_part / unit_part / boundary_score / matched_parent_*:
+                birincil (en guclu) hipotezin kopyasi - geriye donuk uyumlu
+                kisayol; hypotheses[0] ile her zaman ayni.
+    """
+
+    institution_part: str
+    unit_part: str
+    boundary_score: float
+    matched_parent_name: str | None
+    matched_parent_id: str | None
+    hypotheses: list[BoundaryHypothesis] = field(default_factory=list)
+
+
 def _default_search_fn(text: str, record_type: str) -> list[dict[str, Any]]:
     from institution_resolver_v3.elastic.search import search
 
-    return search(text, record_type, size=5)
+    return search(text, record_type, size=10)
 
 
 def decompose(
     query: str,
     *,
     search_fn: SearchFn = _default_search_fn,
-    top_k: int = 5,
+    # 5 -> 10 (2026-07-23): kisa fuzzy-junk adlar ("Jastec"), alan-uzunlugu normu
+    # yuzunden dogru kaydin exact-alias eslesmesini ("JAMSTEC" @ rank 7,
+    # "University of Münster" @ rank 6) top-5 disina itebiliyor - canli olculdu.
+    # Ek ES cagrisi yok, sadece pencere basina daha fazla ucuz fuzz.ratio.
+    top_k: int = 10,
 ) -> DecomposedQuery:
     """Sorguyu kurum/birim kismina ayirir (bkz. modul docstring'i - yontem).
 
@@ -129,18 +203,17 @@ def decompose(
     if not surface_tokens:
         return DecomposedQuery(
             institution_part=query, unit_part="", boundary_score=0.0,
-            matched_parent_name=None, matched_parent_id=None,
+            matched_parent_name=None, matched_parent_id=None, hypotheses=[],
         )
 
     norm_tokens = [normalize(tok).base_no_accent for tok in surface_tokens]
     n = len(surface_tokens)
 
-    best_score = -1.0
-    best_length = -1
-    best_start = 0
-    best_end = n
-    best_name: str | None = None
-    best_id: str | None = None
+    # Parent basina EN IYI (skor, esitlikte uzun aralik, esitlikte ilk gorulen)
+    # aday aralik tutulur - tek global kazanan yerine hipotez havuzu.
+    # deger: (score, length, order, start, end, name)
+    best_by_parent: dict[str, tuple[float, int, int, int, int, str | None]] = {}
+    order = 0
 
     for start in range(n):
         for end in range(start + 1, n + 1):
@@ -149,23 +222,56 @@ def decompose(
             candidate_norm = " ".join(norm_tokens[start:end])
             hits = search_fn(candidate_surface, "parent")[:top_k]
             for hit in hits:
-                hit_norm = normalize(hit.get("name", "") or "").base_no_accent
-                score = fuzz.ratio(candidate_norm, hit_norm)
+                pid = hit.get("id")
+                if pid is None:
+                    continue
+                # Skor = name + HER alias'a karsi ayri ayri fuzz.ratio'nun en iyisi.
+                # Kanitli kacak sinifi (30-sorgu duman testi, 2026-07-23): sorgu
+                # Ingilizce ad/akronimle gelir ("JAMSTEC", "Westfälische
+                # Wilhelms-Universität"), kayit farkli kanonik adla durur - ES
+                # aliases_text'ten bulur ama name-ratio dusuk kalinca hipotez
+                # dogamiyordu. Alias'lar TEK TEK karsilastirilir (uzunluk-duyarli
+                # ratio korunur); birlesik metne partial_ratio KULLANILMAZ
+                # (jenerik pencere tuzagi - bkz. mappings.py "aliases" notu).
+                score = max(
+                    fuzz.ratio(candidate_norm, normalize(v).base_no_accent)
+                    for v in _name_variants(hit)
+                )
+                cur = best_by_parent.get(pid)
                 # esitlikte DAHA UZUN araligi tercih et (bilesik ad durumu)
-                if score > best_score or (score == best_score and length > best_length):
-                    best_score = score
-                    best_length = length
-                    best_start = start
-                    best_end = end
-                    best_name = hit.get("name")
-                    best_id = hit.get("id")
+                if cur is None or score > cur[0] or (score == cur[0] and length > cur[1]):
+                    best_by_parent[pid] = (score, length, order, start, end, hit.get("name"))
+                    order += 1
 
-    institution_part = " ".join(surface_tokens[best_start:best_end])
-    unit_part = " ".join(surface_tokens[:best_start] + surface_tokens[best_end:])
+    if not best_by_parent:
+        return DecomposedQuery(
+            institution_part=" ".join(surface_tokens), unit_part="",
+            boundary_score=0.0, matched_parent_name=None, matched_parent_id=None,
+            hypotheses=[],
+        )
+
+    # Siralama global kazanan mantigiyla ayni: skor > uzunluk > ilk gorulen.
+    ranked = sorted(
+        best_by_parent.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[1][2])
+    )[:MAX_HYPOTHESES]
+
+    hypotheses = [
+        BoundaryHypothesis(
+            institution_part=" ".join(surface_tokens[start:end]),
+            unit_part=" ".join(surface_tokens[:start] + surface_tokens[end:]),
+            boundary_score=max(score, 0.0),
+            matched_parent_name=name,
+            matched_parent_id=pid,
+        )
+        for pid, (score, _length, _order, start, end, name) in ranked
+    ]
+
+    primary = hypotheses[0]
     return DecomposedQuery(
-        institution_part=institution_part,
-        unit_part=unit_part,
-        boundary_score=max(best_score, 0.0),
-        matched_parent_name=best_name,
-        matched_parent_id=best_id,
+        institution_part=primary.institution_part,
+        unit_part=primary.unit_part,
+        boundary_score=primary.boundary_score,
+        matched_parent_name=primary.matched_parent_name,
+        matched_parent_id=primary.matched_parent_id,
+        hypotheses=hypotheses,
     )

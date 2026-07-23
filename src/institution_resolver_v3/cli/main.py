@@ -76,7 +76,14 @@ def match_cmd(
 
     result = resolve(query, size=top)
     d = result.decomposed
-    typer.echo(f"decompose: kurum={d.institution_part!r}  birim={d.unit_part!r}  guven={d.boundary_score:.1f}")
+    typer.echo("decompose hipotezleri (secim yok, hepsi havuza katilir):")
+    for i, h in enumerate(d.hypotheses or []):
+        typer.echo(
+            f"  H{i}: kurum={h.institution_part!r}  birim={h.unit_part!r}  "
+            f"guven={h.boundary_score:.1f}  parent={h.matched_parent_name or '—'}"
+        )
+    if not d.hypotheses:
+        typer.echo(f"  (hipotez yok)  kurum={d.institution_part!r}  guven={d.boundary_score:.1f}")
 
     def _cos(c) -> str:
         return f"{c.cosine:+.3f}" if c.cosine is not None else "   —  "  # None = kNN top-K'ya girmedi

@@ -36,14 +36,17 @@ def build_document(
     Doner: `_id` haric ES kaynak belgesi (indexer `_id`'yi record["id"]'den verir).
     """
     rt = record["record_type"]
-    aliases_text = " ".join(_alias_values(record))
+    alias_values = _alias_values(record)
 
     doc: dict[str, Any] = {
         "id": record["id"],
         "record_type": rt,
         "name": record["name"],
         "normalized_name": record.get("normalized_name"),
-        "aliases_text": aliases_text,
+        "aliases_text": " ".join(alias_values),
+        # ayri liste: decompose'un alias-farkindalikli sinir skoru icin
+        # (aramaya kapali alan, bkz. mappings.py)
+        "aliases": alias_values,
     }
 
     if rt == "parent":

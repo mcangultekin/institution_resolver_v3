@@ -83,6 +83,76 @@ class TestResolveCascade:
         assert all(c.passed_parent_filter is False for c in result.subunits)
 
 
+class TestMultiHypothesisCascade:
+    """Coklu-hipotez revizyonu: cascade tek parent degil, hipotezlerin isaret
+    ettigi TUM makul parent'larla (terms) filtreler - birincil hipotez yanlissa
+    dogru parent'in subunit'i filtreden yine gecer."""
+
+    _PARENTS = [
+        {"id": "101", "record_type": "parent", "name": "GAZİ ÜNİVERSİTESİ"},
+        {"id": "1", "record_type": "parent", "name": "ANKARA ÜNİVERSİTESİ"},
+    ]
+    _SUBS = [
+        {"id": "11", "record_type": "subunit", "name": "İSTATİSTİK BÖLÜMÜ", "parent_id": "101"},
+        {"id": "12", "record_type": "subunit", "name": "İSTATİSTİK ANABİLİM DALI", "parent_id": "1"},
+    ]
+
+    def _run(self):
+        captured: dict = {}
+
+        def fake(text, rt, *, extra_filters=None, size=50):
+            if rt == "parent":
+                qt = set(normalize(text).base_no_accent.split())
+                return _score(
+                    [h for h in self._PARENTS if qt & set(normalize(h["name"]).base_no_accent.split())]
+                )
+            if extra_filters:
+                captured["filters"] = extra_filters
+                allowed = set(extra_filters[0]["terms"]["parent_id"])
+                return _score([h for h in self._SUBS if h["parent_id"] in allowed])
+            return _score(self._SUBS)
+
+        result = resolve(
+            "gazi üniversitesi istatistik bölümü",
+            search_fn=fake,
+            search_knn_fn=_fake_search_knn_fn,
+        )
+        return result, captured
+
+    def test_terms_filter_covers_alternate_hypothesis_parents(self):
+        result, captured = self._run()
+        cascade_ids = captured["filters"][0]["terms"]["parent_id"]
+        assert cascade_ids[0] == "101"  # en guclu parent adayi basta
+        assert "1" in cascade_ids  # alternatif hipotezin parent'i da filtrede
+
+    def test_alternate_parent_subunit_passes_filter(self):
+        result, _ = self._run()
+        by_id = {c.id: c for c in result.subunits}
+        assert by_id["11"].passed_parent_filter is True
+        assert by_id["12"].passed_parent_filter is True
+
+    def test_parent_union_keeps_primary_first(self):
+        result, _ = self._run()
+        assert result.parents[0].id == "101"
+        assert {c.id for c in result.parents} == {"101", "1"}
+
+    def test_hypothesis_parent_injected_when_missing_from_pool(self):
+        # Hipotezin parent'i havuz aramasinin top-K'sina girmese bile hakem icin
+        # aday listesinde bulunmali (asgari sinyallerle enjekte edilir).
+        dsf = lambda text, rt: [{"id": "77", "name": "GAZİ ÜNİVERSİTESİ"}]  # noqa: E731
+        result = resolve(
+            "gazi üniversitesi istatistik bölümü",
+            search_fn=lambda text, rt, **kw: [] if rt == "parent" else _fake_search_fn(text, rt, **kw),
+            search_knn_fn=_fake_search_knn_fn,
+            decompose_search_fn=dsf,
+        )
+        assert [c.id for c in result.parents] == ["77"]
+        injected = result.parents[0]
+        assert injected.raw.get("from_hypothesis_only") is True
+        assert injected.bm25_norm == 0.0
+        assert injected.cosine is None
+
+
 class TestResolveSignals:
     def test_signals_present_and_in_range(self):
         result = resolve(

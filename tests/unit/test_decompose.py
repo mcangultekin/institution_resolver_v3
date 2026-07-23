@@ -13,6 +13,11 @@ from institution_resolver_v3.normalize.query_pipeline import normalize
 from institution_resolver_v3.retrieve.decompose import decompose
 
 _POOL = [
+    {
+        "id": "900",
+        "name": "Japan Agency for Marine-Earth Science and Technology",
+        "aliases": ["JAMSTEC", "Japan Agency for Marine-Earth Science and Technology"],
+    },
     {"id": "101", "name": "GAZİ ÜNİVERSİTESİ"},
     {"id": "1", "name": "ANKARA ÜNİVERSİTESİ"},
     {"id": "2", "name": "ESKİŞEHİR OSMANGAZİ ÜNİVERSİTESİ"},
@@ -28,7 +33,8 @@ def _fake_search(text: str, record_type: str) -> list[dict]:
     query_tokens = set(normalize(text).base_no_accent.split())
     hits = []
     for rec in _POOL:
-        name_tokens = set(normalize(rec["name"]).base_no_accent.split())
+        indexed = " ".join([rec["name"], *rec.get("aliases", [])])
+        name_tokens = set(normalize(indexed).base_no_accent.split())
         if query_tokens & name_tokens:
             hits.append(rec)
     return hits
@@ -87,3 +93,44 @@ class TestDecompose:
         assert result.institution_part == ""
         assert result.unit_part == ""
         assert result.boundary_score == 0.0
+        assert result.hypotheses == []
+
+
+class TestHypotheses:
+    def test_primary_mirrors_first_hypothesis(self):
+        result = decompose("gazi üniversitesi istatistik bölümü", search_fn=_fake_search)
+        assert result.hypotheses
+        h0 = result.hypotheses[0]
+        assert (result.institution_part, result.unit_part) == (h0.institution_part, h0.unit_part)
+        assert result.matched_parent_id == h0.matched_parent_id
+        assert result.boundary_score == h0.boundary_score
+
+    def test_hypotheses_point_to_distinct_parents(self):
+        result = decompose("gazi üniversitesi istatistik bölümü", search_fn=_fake_search)
+        ids = [h.matched_parent_id for h in result.hypotheses]
+        assert len(ids) == len(set(ids))
+
+    def test_alternate_parents_included(self):
+        # "üniversitesi" penceresi baska universitelere de (Ankara/Osmangazi)
+        # ortusuyor - dogru cevap birincil (101) olsa da farkli parent'lara
+        # isaret eden alternatif hipotezler listede kalmali (secim decompose'un
+        # isi degil, asagi katmanlarin).
+        result = decompose("gazi üniversitesi istatistik bölümü", search_fn=_fake_search)
+        assert result.hypotheses[0].matched_parent_id == "101"
+        alternate_ids = {h.matched_parent_id for h in result.hypotheses[1:]}
+        assert alternate_ids  # en az bir alternatif var
+        assert "101" not in alternate_ids
+
+    def test_acronym_alias_creates_hypothesis(self):
+        # Kanitli kacak sinifi: sorgu akronim/Ingilizce alias'la gelir, kayit
+        # farkli kanonik adla durur. Skor name'e EK alias'lara karsi da
+        # hesaplanmali - yoksa hipotez hic dogmuyor (30-sorgu duman testi).
+        result = decompose("jamstec ocean drilling department", search_fn=_fake_search)
+        assert result.hypotheses[0].matched_parent_id == "900"
+        assert result.hypotheses[0].institution_part == "jamstec"
+        assert result.hypotheses[0].boundary_score == 100.0
+
+    def test_hypotheses_sorted_by_score(self):
+        result = decompose("gazi üniversitesi istatistik bölümü", search_fn=_fake_search)
+        scores = [h.boundary_score for h in result.hypotheses]
+        assert scores == sorted(scores, reverse=True)

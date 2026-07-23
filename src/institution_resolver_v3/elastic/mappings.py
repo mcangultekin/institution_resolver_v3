@@ -89,6 +89,13 @@ def build_mapping() -> dict[str, Any]:
                 "analyzer": "turkish_analyzer",
                 "fields": {"ascii": {"type": "text", "analyzer": "ascii_analyzer"}},
             },
+            # Alias'larin AYRI liste hali - ARAMAYA KAPALI (aramayi aliases_text
+            # yapar); decompose'un sinir skorunu her alias'a karsi TEK TEK
+            # (uzunluk-duyarli fuzz.ratio) hesaplayabilmesi icin _source'ta tutulur.
+            # Birlesik aliases_text'e karsi partial_ratio KULLANILMAZ: tek kelimelik
+            # jenerik pencere ("üniversitesi") her birlesik metinde 100 bulur - yeni
+            # bir cekim-merkezi dogurur (bkz. docs/DENEY_2026-07-23_parent_dogrulama.md).
+            "aliases": {"type": "keyword", "index": False, "doc_values": False},
             "parent_name": _text_field(),              # subunit'e denormalize (parent enjeksiyonu)
             "kind_label_raw": {"type": "keyword"},
             "unit_type": {"type": "keyword"},

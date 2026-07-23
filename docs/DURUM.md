@@ -1,7 +1,7 @@
 # DURUM ve PLAN — Institution Resolver v3
 
 > Bu dosya devamlılık içindir: oturum kapanıp açılsa da (veya yeni bir Claude
-> oturumu) buradan tam bağlamı alır. Güncel tut. Son güncelleme: 2026-07-22.
+> oturumu) buradan tam bağlamı alır. Güncel tut. Son güncelleme: 2026-07-23.
 
 ## Amaç
 
@@ -50,7 +50,8 @@ Girdi → NORMALIZE → ELASTICSEARCH (aday havuzu: parent + subunit)
 | **F1** | ES tek-index + lexical arama + indexer | ✅ BİTTİ |
 | **F3 (embedding)** | e5-base embed + hibrit arama (BM25+kNN, RRF) — index'te 231.291 vektör | ✅ BİTTİ |
 | **retrieve/ katmanı** | `decompose.py` (ES-destekli sınır tespiti) + `resolve.py` (parent-first cascade + sinyaller) | ✅ BİTTİ (bkz. aşağıda) |
-| **F2** | **Gerçek sette recall@k ölç** (darboğaz retrieval mı karar mı?) | ⏭️ SIRADA (etiketli set ertelendi) |
+| **retrieve/ 1b** | Çoklu-hipotez + alias-farkındalıklı decompose + çoklu-parent cascade | ✅ BİTTİ (2026-07-23) |
+| **F2** | Gerçek sette recall@k ölç | ❌ İPTAL (kullanıcı kararı — bkz. Sıradaki İşler 3) |
 | F3 (kalan) | deterministik gate | — |
 | F4 | LLM hakem katmanı (tek çağrı parse+judge) + doğrulayıcılar + gerçek sette ölç | — |
 | F5 | Batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü | — |
@@ -102,18 +103,66 @@ senaryoları hepsi doğru ayrıştı).
 (108) yeşil. **Henüz gerçek etiketli sette recall ölçülmedi** (F2, aşağıda) — bu sadece canlı
 örnek/manuel doğrulama, sistematik değil.
 
+### 1b. Çoklu-hipotez revizyonu (2026-07-23) ✅ BİTTİ — "karar değil hipotez"
+
+> **TAM RAPOR:** `RAPOR_2026-07-23_coklu_hipotez_revizyonu.md` — bulunan 9 hata
+> sınıfı kanıtlarıyla, dosya dosya değişiklikler, 30-sorgu önce/sonra tablosu.
+
+**Strateji kararı (kullanıcı): F2 (etiketli set) YAPILMAYACAK.** Sonuç: retrieval'da
+incelik ayarı/seçim optimizasyonu tamamen bırakıldı — retrieval'ın tek görevi
+**recall'ü korumak**, seçim bütünüyle F4 LLM hakeme geçiyor (hakem sorgu başına
+tek tek denetlenebilir, küme-metriği gerektirmez).
+
+Yapılanlar (tümü test-kilitli, 119 test yeşil):
+- `decompose` artık TEK sınır SEÇMİYOR: farklı parent'lara işaret eden en iyi
+  `MAX_HYPOTHESES=5` sınır hipotezi (`DecomposedQuery.hypotheses`; birincil
+  alanlar = hypotheses[0], geriye dönük uyumlu). Sıralanır ama ELENMEZ —
+  dünkü geri alınan "doğrulama/seçim" deneyinin tuzağı tekrarlanmadı.
+- **Alias-farkındalıklı sınır skoru:** ratio artık name + HER alias'a (ve
+  alias'ların virgül-segmentlerine, ≥2 kelime şartıyla) karşı tek tek
+  hesaplanıyor. Kanıtlı kaçak sınıfı çözüldü: "JAMSTEC", "Westfälische
+  Wilhelm University" (ES alias'tan buluyordu ama name-ratio düşük kalınca
+  hipotez doğmuyordu). Bunun için ES belgesine aramaya KAPALI `aliases`
+  listesi eklendi (mappings+document, reindex yapıldı). Birleşik
+  `aliases_text`'e partial_ratio bilerek KULLANILMADI (jenerik pencere tuzağı).
+- decompose `top_k` 5→10 (kısa fuzzy-junk adlar, alan-uzunluğu normuyla doğru
+  kaydın exact-alias eşleşmesini top-5 dışına itiyordu — canlı ölçüldü).
+- `resolve`: parent havuzu = hipotezlerin birleşimi (birincil `size`, diğerleri
+  +3 yeni aday); hipotez parent'ı havuz top-K'sına girmediyse asgari sinyalle
+  ENJEKTE edilir (`from_hypothesis_only`); cascade tek parent değil
+  `terms: [≤6 parent_id]`. Parent sinyalleri (tsr/qualifier) TAM sorguya karşı
+  (hipotez parçasına karşı hesaplanınca jenerik parça alakasız adaylara
+  tsr=100 veriyordu).
+- Bilinen yan etki (kabul edildi): tek-tokenlik pencereler akronim alias'larına
+  tesadüfen 100 alabiliyor ("Ana"→ANA Aeroportos H0 olabiliyor). Formdan
+  ayırt edilemez; MAX_HYPOTHESES=5 doğru hipotezi listede tutuyor, seçim
+  hakemin işi. 30-sorgu duman testi (`isimler_tekrarsız.csv`, seed 42, gözle):
+  net recall başarısı ~24/30, kalan ~6'sı korpusta-hiç-yok (doğru cevap
+  no_match) — retrieval kaçağı olarak yalnız İngilizce-alias'ı-veride-olmayan
+  vakalar kaldı (ör. Adli Tıp Kurumu'nun "Council of Forensic Medicine"
+  alias'ı yok — veri eksikliği, kod değil).
+
 ### 2. Deterministik gate (F3 kalan)
 Çok net → auto adayı, çok çöp (lexical floor düşük) → no_match. **Eşikler F4'ten SONRA, gerçek sette ayarlanır** (körlemesine değil).
 
-### 3. F2 — recall ölçümü  [ETİKET GEREKTİRİR — ertelendi]
-Gerçek etiketli set (~150 pilot → gerekirse 400; LLM ön-etiket + insan onayı). v2 `real_labeled.csv` HATALI, kullanma.
-recall@50 ölç: doğru cevap havuzda mı? Yüksek → karar sorunu (F4'e geç); düşük → retrieval'ı düzelt.
+### 3. F2 — recall ölçümü  [İPTAL — kullanıcı kararı 2026-07-23: etiketli set YAPILMAYACAK]
+Yerine: retrieval recall-yönelimli tutulur (1b), seçim F4 hakeme bırakılır, doğrulama
+sorgu başına gözle/duman testiyle yapılır. (v2 `real_labeled.csv` HATALI, kullanma.)
 
 ### 4. F4 — LLM hakem  [ANTHROPIC API GEREKTİRİR]
 Adaylar + sinyaller → LLM doğru olanı seçer → `auto_match/review/ambiguous/no_match` + JSON.
 Yetki asimetrisi (LLM düşürür, deterministik kanıt yükseltir) — karar bekliyor.
 
 ### 5. F5 — batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü
+
+### Aday iyileştirme — kanıt bekliyor (kullanıcı fikri, 2026-07-23)
+Subunit havuzuna EK recall kanalı: kurum sorgunun ortasındayken hipotezin
+SOL ve SAĞ artıkları ayrı ayrı aranıp (BM25+kNN) recall-güvenli birleşime
+katılabilir. Gerekçe: tam-sorgu araması uzun/gürültülü sorgularda seyreliyor
+(BM25 ve embedding sulanması); iki artığı tek dizgeye yapıştırmak embedding
+vektörünü bulandırır. Maliyet: hipotez başına +2 arama + havuza gürültü.
+**Eklemeden önce kanıt:** 30-sorgu setinde sol/sağ kolun, tam-sorgu kolunun
+kaçırdığı doğru subunit'i yakaladığı vaka var mı ölçülecek (prototip).
 
 ### Açık kararlar (henüz verilmedi)
 - LLM auto'ya terfi edebilir mi (yetki asimetrisi)?

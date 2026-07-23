@@ -1,14 +1,20 @@
 """Parent-first cascade + sinyaller (SIRADAKI ISLER 1, docs/DURUM.md).
 
-Akis:
-1. `decompose()` ile sorgunun kurum kismini ayikla (bkz. decompose.py).
-2. Kurum kismiyla PARENT havuzunu ara -> en guclu aday "top parent".
-3. SUBUNIT'i top parent'in `parent_id`'siyle FILTRELI ara. Ayrica (parent
-   yanlis cikmis olabilir ihtimaline karsi) FILTRESIZ de ara - ikisini
-   birlestir (filtreli sonuclar once, filtresizde olup filtrelide olmayanlar
-   sona eklenir). Bu, "recall-guvenli" cascade: parent tahmini yanlissa bile
-   dogru subunit tamamen kaybolmaz, sadece sirada geriye duser. ESIK YOK -
-   docs/DURUM.md calisma tarzi geregi esik tahmini icin etiketli set gerekir.
+Akis (2026-07-23 revizyonu: coklu-hipotez, recall-yonelimli):
+1. `decompose()` sorgu icin BIRDEN FAZLA kurum-siniri hipotezi dondurur
+   (bkz. decompose.py "KARAR DEGIL HIPOTEZ"). Secim burada da YAPILMAZ.
+2. HER hipotezin kurum kismiyla PARENT havuzu ayri aranir; havuzlar
+   recall-guvenli birlestirilir (birincil hipotezin sonuclari once, diger
+   hipotezlerden gelen YENI adaylar sona eklenir). Boylece decompose'un
+   birincil hipotezi yanlissa dogru parent havuzdan dusmez.
+3. SUBUNIT, makul parent'larin TAMAMIYLA (`terms` filtresi: en guclu parent
+   adayi + her hipotezin isaret ettigi parent) FILTRELI aranir. Ayrica
+   (hepsi yanlis cikmis olabilir ihtimaline karsi) FILTRESIZ de aranir -
+   ikisi birlestirilir (filtreli once, filtresizde olup filtrelide
+   olmayanlar sona). Bu, "recall-guvenli" cascade: parent tahminleri yanlissa
+   bile dogru subunit tamamen kaybolmaz, sadece sirada geriye duser.
+   ESIK YOK - docs/DURUM.md calisma tarzi geregi esik tahmini icin etiketli
+   set gerekir.
 4. Her aday icin HAM sinyaller hesaplanir (RRF'nin ezdigi tek-boyutlu skor
    yerine, gate/LLM katmaninin ayri ayri degerlendirebilecegi kanit):
    - bm25_norm: ham BM25 skoru, o sorgunun kendi listesindeki en yuksek
@@ -152,6 +158,110 @@ def _attach_signals(
     return out
 
 
+# Cascade `terms` filtresine en fazla kac farkli parent_id girer (en guclu
+# parent adayi + hipotezlerin isaret ettikleri; recall icin genis, ama sinirsiz
+# degil - filtre anlamini yitirmesin). 4 -> 6: MAX_HYPOTHESES 5'e cikinca
+# (bkz. decompose.py) tum hipotez parent'lari + en guclu aday sigsin.
+MAX_CASCADE_PARENTS = 6
+
+# Birincil-olmayan her hipotezin parent havuzuna katabilecegi YENI aday sayisi
+# (birincil hipotez `size` kadar getirir; alternatifler havuzu sisirmeden
+# sadece kendi en guclu adaylarini ekler).
+ALT_HYPOTHESIS_CONTRIB = 3
+
+
+def _parent_union(
+    decomposed,
+    query: str,
+    *,
+    size: int,
+    search_fn: PoolSearchFn,
+    search_knn_fn: PoolSearchFn,
+) -> list[ScoredCandidate]:
+    """Her hipotezin kurum kismiyla ayri parent aramasi; recall-guvenli birlesim.
+
+    Birincil hipotezin sonuclari once ve `size` kadar; sonraki hipotezler
+    yalnizca havuzda OLMAYAN ilk ALT_HYPOTHESIS_CONTRIB adayini ekler.
+    bm25_norm her aramanin KENDI ICINDE normalize edilir (farkli sorgu
+    metinlerinin ham BM25'leri karsilastirilamaz). token_set_ratio ve
+    qualifier_conflict ise TAM ORIJINAL SORGUYA gore hesaplanir - hipotezin
+    kendi parcasina gore hesaplansaydi tek kelimelik jenerik bir parca
+    ("üniversitesi") uzerinden alakasiz adaylar tsr=100 alirdi (canli
+    dogrulandi: Biruni/Selçuk/Boğaziçi); `token_set_ratio` sorgudaki fazla
+    kelimeye zaten toleransli, dogru parent tam sorguya karsi da 100 alir.
+    """
+    parts_seen: set[str] = set()
+    ids_seen: set[str] = set()
+    union: list[ScoredCandidate] = []
+    for rank, hyp in enumerate(decomposed.hypotheses or [decomposed]):
+        part = hyp.institution_part
+        if not part or part in parts_seen:
+            continue
+        parts_seen.add(part)
+        merged, bm25, knn, max_bm25 = _pool_with_raw_scores(
+            part, "parent", extra_filters=None, size=size,
+            search_fn=search_fn, search_knn_fn=search_knn_fn,
+        )
+        cands = _attach_signals(
+            merged, bm25_by_id=bm25, knn_by_id=knn, max_bm25=max_bm25, query_text=query
+        )
+        budget = size if rank == 0 else ALT_HYPOTHESIS_CONTRIB
+        added = 0
+        for c in cands:
+            if added >= budget:
+                break
+            if c.id in ids_seen:
+                continue
+            ids_seen.add(c.id)
+            union.append(c)
+            added += 1
+
+    # Hipotezin isaret ettigi parent, havuz aramalarinin top-K'sina girmemis
+    # olabilir (canli ornek: "JAMSTEC," aramasinda dogru kayit rank 7'de, kisa
+    # fuzzy-junk adlar ustte) - hakemin degerlendirebilmesi icin asgari
+    # sinyallerle enjekte edilir (bm25_norm=0.0: listeye girmedi; cosine=None:
+    # olculmedi).
+    query_norm = normalize(query).base_no_accent
+    query_quals = extract_qualifiers(query)
+    for hyp in decomposed.hypotheses or []:
+        pid = hyp.matched_parent_id
+        name = hyp.matched_parent_name or ""
+        if pid is None or pid in ids_seen:
+            continue
+        ids_seen.add(pid)
+        union.append(
+            ScoredCandidate(
+                id=pid,
+                record_type="parent",
+                name=name,
+                raw={"id": pid, "record_type": "parent", "name": name, "from_hypothesis_only": True},
+                bm25_norm=0.0,
+                cosine=None,
+                token_set_ratio=fuzz.token_set_ratio(query_norm, normalize(name).base_no_accent),
+                qualifier_conflict=qualifiers_conflict(query_quals, extract_qualifiers(name)),
+            )
+        )
+    return union
+
+
+def _cascade_parent_ids(parents: list[ScoredCandidate], decomposed) -> list[str]:
+    """Cascade filtresi icin makul parent id listesi: en guclu parent adayi +
+    hipotezlerin isaret ettigi parent'lar (sirali, tekrarsiz, MAX_CASCADE_PARENTS)."""
+    ordered: list[str] = []
+    if parents:
+        ordered.append(parents[0].id)
+    for hyp in getattr(decomposed, "hypotheses", None) or []:
+        if hyp.matched_parent_id is not None:
+            ordered.append(hyp.matched_parent_id)
+    seen: set[str] = set()
+    out: list[str] = []
+    for pid in ordered:
+        if pid not in seen:
+            seen.add(pid)
+            out.append(pid)
+    return out[:MAX_CASCADE_PARENTS]
+
+
 def resolve(
     query: str,
     *,
@@ -160,34 +270,27 @@ def resolve(
     search_knn_fn: PoolSearchFn = _default_search_knn,
     decompose_search_fn: Callable[[str, str], list[dict[str, Any]]] | None = None,
 ) -> ResolveResult:
-    """Parent-first cascade: kurum kismiyla parent bul, subunit'i parent_id ile
-    filtrele + filtresizle birlestir (recall-guvenli), her adaya sinyal ekle."""
-    dsf = decompose_search_fn or (lambda text, rt: search_fn(text, rt, size=5))
+    """Coklu-hipotezli, recall-yonelimli cascade: her hipotezle parent ara ve
+    birlestir, subunit'i makul parent'larin tamamiyla (terms) filtrele +
+    filtresizle birlestir (recall-guvenli), her adaya sinyal ekle."""
+    dsf = decompose_search_fn or (lambda text, rt: search_fn(text, rt, size=10))
     decomposed = decompose(query, search_fn=dsf)
 
-    parent_merged, p_bm25, p_knn, p_max_bm25 = _pool_with_raw_scores(
-        decomposed.institution_part,
-        "parent",
-        extra_filters=None,
-        size=size,
-        search_fn=search_fn,
-        search_knn_fn=search_knn_fn,
-    )
-    parents = _attach_signals(
-        parent_merged, bm25_by_id=p_bm25, knn_by_id=p_knn, max_bm25=p_max_bm25, query_text=decomposed.institution_part
+    parents = _parent_union(
+        decomposed, query, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn
     )
 
-    top_parent_id = parents[0].id if parents else None
+    cascade_ids = _cascade_parent_ids(parents, decomposed)
 
     sub_unfiltered, s_bm25, s_knn, s_max_bm25 = _pool_with_raw_scores(
         query, "subunit", extra_filters=None, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn
     )
 
-    if top_parent_id is not None:
+    if cascade_ids:
         sub_filtered, sf_bm25, sf_knn, sf_max_bm25 = _pool_with_raw_scores(
             query,
             "subunit",
-            extra_filters=[{"term": {"parent_id": top_parent_id}}],
+            extra_filters=[{"terms": {"parent_id": cascade_ids}}],
             size=size,
             search_fn=search_fn,
             search_knn_fn=search_knn_fn,
