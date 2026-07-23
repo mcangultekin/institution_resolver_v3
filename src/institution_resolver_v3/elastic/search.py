@@ -18,8 +18,9 @@ from elasticsearch import Elasticsearch
 from institution_resolver_v3.elastic.client import es_config, get_client
 from institution_resolver_v3.normalize.query_pipeline import expand_query_text
 
-_PARENT_FIELDS = ["name^3", "name.ascii^2", "aliases_text^1.5", "aliases_text.ascii"]
-_SUBUNIT_FIELDS = _PARENT_FIELDS + ["parent_name^1.5", "parent_name.ascii"]
+_PARENT_FIELDS = ["name^2.2", "name.ascii^1.5", "aliases_text^2", "aliases_text.ascii^1.3"]
+# subunit ESKİ agirliklarla SABİT - parent'taki degisiklik buraya sizmasin (bilerek kapsam disi)
+_SUBUNIT_FIELDS = ["name^3", "name.ascii^2", "aliases_text^1.5", "aliases_text.ascii", "parent_name^1.5", "parent_name.ascii"]
 
 
 def build_search_query(
