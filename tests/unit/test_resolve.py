@@ -36,9 +36,13 @@ def _fake_search_fn(text, record_type, *, extra_filters=None, size=50):
 
 
 def _fake_search_knn_fn(text, record_type, *, extra_filters=None, size=50):
-    # kNN havuzu bos donsun - test sadece BM25/cascade/merge davranisini dogruluyor,
-    # cosine=0.0 (kNN havuzunda yok) beklenen default.
+    # kNN havuzu bos donsun - test sadece BM25/cascade/merge davranisini dogruluyor.
     return []
+
+
+def _no_cosine_fn(text, hits):
+    # Kosinus doldurma kapali (ES/embedding gerektirmesin); None kalir.
+    return {}
 
 
 class TestResolveCascade:
@@ -47,6 +51,7 @@ class TestResolveCascade:
             "gazi üniversitesi istatistik bölümü",
             search_fn=_fake_search_fn,
             search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
         )
         assert result.decomposed.institution_part == "gazi üniversitesi"
         assert len(result.parents) == 1
@@ -57,6 +62,7 @@ class TestResolveCascade:
             "gazi üniversitesi istatistik bölümü",
             search_fn=_fake_search_fn,
             search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
         )
         ids = [c.id for c in result.subunits]
         assert ids == ["1", "2"]  # filtreli (1) once, filtresizde-kalan (2) sonra
@@ -66,6 +72,7 @@ class TestResolveCascade:
             "gazi üniversitesi istatistik bölümü",
             search_fn=_fake_search_fn,
             search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
         )
         by_id = {c.id: c for c in result.subunits}
         assert by_id["1"].passed_parent_filter is True
@@ -76,6 +83,7 @@ class TestResolveCascade:
             "bilinmeyen kurum istatistik bölümü",
             search_fn=lambda text, rt, **kw: [] if rt == "parent" else _fake_search_fn(text, rt, **kw),
             search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
         )
         assert result.parents == []
         ids = [c.id for c in result.subunits]
@@ -116,6 +124,7 @@ class TestMultiHypothesisCascade:
             "gazi üniversitesi istatistik bölümü",
             search_fn=fake,
             search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
         )
         return result, captured
 
@@ -144,6 +153,7 @@ class TestMultiHypothesisCascade:
             "gazi üniversitesi istatistik bölümü",
             search_fn=lambda text, rt, **kw: [] if rt == "parent" else _fake_search_fn(text, rt, **kw),
             search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
             decompose_search_fn=dsf,
         )
         assert [c.id for c in result.parents] == ["77"]
@@ -159,6 +169,7 @@ class TestResolveSignals:
             "gazi üniversitesi istatistik bölümü",
             search_fn=_fake_search_fn,
             search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
         )
         for cand in result.parents + result.subunits:
             assert 0.0 <= cand.bm25_norm <= 1.0
@@ -172,15 +183,34 @@ class TestResolveSignals:
             "gazi üniversitesi istatistik bölümü",
             search_fn=_fake_search_fn,
             search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
         )
         assert result.parents[0].bm25_norm == 1.0
 
-    def test_no_knn_hit_yields_cosine_none(self):
-        # kNN havuzu bos donuyor (bkz. _fake_search_knn_fn) - "olculmedi" ile
-        # "olculdu, dusuk cikti" (0.0) karistirilmamali (bkz. resolve.py docstring'i).
+    def test_cosine_none_only_when_fill_cannot_compute(self):
+        # cosine_fn hicbir sey hesaplayamazsa None KALIR ("vektor yok/alinamadi") -
+        # 0.0'a cevrilmez (bkz. resolve.py docstring'i).
         result = resolve(
             "gazi üniversitesi istatistik bölümü",
             search_fn=_fake_search_fn,
             search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
         )
         assert all(c.cosine is None for c in result.parents + result.subunits)
+
+    def test_cosine_filled_for_non_knn_candidates(self):
+        # kNN havuzu bos olsa bile cosine_fn her aday icin kosinusu doldurur -
+        # hakem tam vektor kaniti gorur (2026-07-24 revizyonu).
+        def fake_cosine(text, hits):
+            return {h["id"]: 0.9 for h in hits}
+
+        result = resolve(
+            "gazi üniversitesi istatistik bölümü",
+            search_fn=_fake_search_fn,
+            search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=fake_cosine,
+        )
+        assert result.parents and result.subunits
+        for cand in result.parents + result.subunits:
+            assert cand.cosine is not None
+            assert abs(cand.cosine - 0.9) < 1e-9  # (c+1)/2 -> 2s-1 gidis-donusu kayipsiz

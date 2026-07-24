@@ -180,6 +180,12 @@ hakem "havuzda doğru yok" dediğinde ikinci-tur parent'sız birim araması
 (fallback) daha hedefli bir çözüm olabilir — F4 sonrası değerlendirilecek.
 
 ### Açık kararlar (henüz verilmedi)
+- **Çapraz-kaynak parent ikizleri (ölçüldü 2026-07-23, ERTELENDİ — F5/batch ÖNCESİ şart):**
+  ~270 grup YÖK↔ROR aynı-alias parent çifti (ör. SBÜ 49 ↔ University of Health
+  Sciences 8701; Bartın 243↔68525). Bir kısmı SAHTE ikiz (Polis Akademisi TR ↔
+  Policijska akademija HR) — ayrım country ile. Plan: decide katmanında
+  `parent_equivalents` eşdeğerlik tablosu (alias-eşleşme + aynı country → kanonik
+  id, tercihen YÖK), ingest'e dokunmadan, son-işlem çevirisi. F4'ü ENGELLEMEZ.
 - LLM auto'ya terfi edebilir mi (yetki asimetrisi)?
 - (İÖ) ikizleri: sert-merge mi yumuşak-tercih mi?
 - Batch ölçeği/bütçe?

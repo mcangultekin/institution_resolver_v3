@@ -20,12 +20,12 @@ Akis (2026-07-23 revizyonu: coklu-hipotez, recall-yonelimli):
    - bm25_norm: ham BM25 skoru, o sorgunun kendi listesindeki en yuksek
      skora bolunerek [0,1]'e normalize edilir (listeler-arasi sabit bir
      esik degil, HER sorgu kendi icinde normalize edilir).
-   - cosine: ES'in kNN skorundan (`similarity=cosine` mapping, bkz.
-     elastic/mappings.py) geri cikarilan gercek kosinus benzerligi
-     (`2*es_score - 1`); aday kNN havuzunda hic gorunmediyse `None`
-     ("olculmedi" - "dusuk benzerlik olculdu" ile KARISTIRILMAMALI, 0.0
-     DEGIL: bir tuketici bunu 0.0 sanip adayi haksiz yere cezalandirabilir,
-     ozellikle F4'teki LLM hakem JSON'da bu alani kanit olarak okuyacak).
+   - cosine: gercek kosinus benzerligi. Aday kNN top-K'da gorunduyse ES
+     skorundan geri cikarilir (`2*es_score - 1`, `similarity=cosine` mapping);
+     gorunmediyse cosine_fn HESAPLAR (hit'in `_source`'undaki embedding ile,
+     yoksa mget) - boylece hakem HER aday icin vektor kaniti gorur. `None`
+     yalnizca "vektor yok/alinamadi" demektir; 0.0 ile KARISTIRILMAMALI
+     (tuketici 0.0 sanip adayi haksiz cezalandirmasin).
    - token_set_ratio: rapidfuzz, sorgu ile aday adi arasinda (aksan/case
      normalize edilmis).
    - qualifier_conflict: `normalize.qualifiers.qualifiers_conflict` (var
@@ -45,6 +45,43 @@ from institution_resolver_v3.retrieve.decompose import DecomposedQuery, decompos
 
 PoolSearchFn = Callable[..., list[dict[str, Any]]]
 
+# (arama metni, kNN listesine girememis hit'ler) -> {raw id -> kosinus}
+CosineFn = Callable[[str, list[dict[str, Any]]], dict[str, float]]
+
+
+def _default_cosine_fn(text: str, hits: list[dict[str, Any]]) -> dict[str, float]:
+    """Havuza girip kNN top-K'da gorunmeyen adaylarin kosinusunu HESAPLAR.
+
+    Arama sonuclari `_source`'ta embedding vektorunu zaten tasir - onlar icin ek
+    ES cagrisi yok. Vektoru olmayanlar (enjekte hipotez parent'lari gibi) tek
+    mget ile tamamlanir. Doner: gercek kosinus [-1,1]. Vektoru hic bulunamayan
+    kayit sozlukte YER ALMAZ (cosine=None kalir - artik "olculemedi" yalnizca
+    "vektor yok/alinamadi" demek).
+    """
+    if not hits:
+        return {}
+    import numpy as np
+
+    from institution_resolver_v3.elastic.search import fetch_embeddings
+    from institution_resolver_v3.embedding.query_encoder import encode_query
+
+    qv = np.asarray(encode_query(text), dtype=np.float32)
+    qn = float(np.linalg.norm(qv)) or 1.0
+
+    missing = [h for h in hits if not h.get("embedding")]
+    fetched = fetch_embeddings(
+        [f"{h.get('record_type', 'parent')}:{h['id']}" for h in missing]
+    )
+    out: dict[str, float] = {}
+    for h in hits:
+        vec = h.get("embedding") or fetched.get(h["id"])
+        if not vec:
+            continue
+        v = np.asarray(vec, dtype=np.float32)
+        vn = float(np.linalg.norm(v)) or 1.0
+        out[h["id"]] = float(np.dot(qv, v) / (qn * vn))
+    return out
+
 
 @dataclass
 class ScoredCandidate:
@@ -53,7 +90,10 @@ class ScoredCandidate:
     name: str
     raw: dict[str, Any]
     bm25_norm: float = 0.0
-    cosine: float | None = None  # None = kNN top-K'ya girmedi (olculmedi, "dusuk benzerlik" DEGIL)
+    # None = vektor yok/alinamadi ("dusuk benzerlik" DEGIL). kNN top-K'ya
+    # girmeyenler icin kosinus artik cosine_fn ile AYRICA hesaplanir (2026-07-24),
+    # o yuzden None nadirdir (embeddingsiz kayit / fetch hatasi).
+    cosine: float | None = None
     token_set_ratio: float = 0.0
     qualifier_conflict: bool = False
     passed_parent_filter: bool | None = None  # sadece subunit icin anlamli
@@ -93,13 +133,24 @@ def _pool_with_raw_scores(
     size: int,
     search_fn: PoolSearchFn,
     search_knn_fn: PoolSearchFn,
+    cosine_fn: CosineFn,
 ) -> tuple[list[dict[str, Any]], dict[str, float], dict[str, float], float]:
-    """BM25+kNN'i AYRI cagirir (ham skorlar korunur), RRF sadece havuzlama/siralama icin."""
+    """BM25+kNN'i AYRI cagirir (ham skorlar korunur), RRF sadece havuzlama/siralama icin.
+
+    kNN top-K'ya girememis havuz uyeleri icin kosinus AYRICA hesaplanir
+    (cosine_fn) - hakem her aday icin tam vektor kaniti gorur; "kNN listesine
+    girmedi" bilgisi kaybolmaz ama sinyal olarak None birakilmaz.
+    """
     bm25_hits = search_fn(text, record_type, extra_filters=extra_filters, size=size)
     knn_hits = search_knn_fn(text, record_type, extra_filters=extra_filters, size=size)
     merged = _rrf_merge([bm25_hits, knn_hits], size=size)
     bm25_by_id = {h["id"]: h["score"] for h in bm25_hits}
     knn_by_id = {h["id"]: h["score"] for h in knn_hits}
+    # kNN'de gorunmeyenlerin kosinusu: ES-skor uzayina cevrilip ((c+1)/2)
+    # knn_by_id'ye yazilir - _attach_signals tek tip geri-cevirir (2s-1).
+    not_in_knn = [h for h in merged if h["id"] not in knn_by_id]
+    for hid, cos in cosine_fn(text, not_in_knn).items():
+        knn_by_id[hid] = (cos + 1.0) / 2.0
     max_bm25 = max(bm25_by_id.values(), default=0.0) or 1.0
     return merged, bm25_by_id, knn_by_id, max_bm25
 
@@ -177,6 +228,7 @@ def _parent_union(
     size: int,
     search_fn: PoolSearchFn,
     search_knn_fn: PoolSearchFn,
+    cosine_fn: CosineFn,
 ) -> list[ScoredCandidate]:
     """Her hipotezin kurum kismiyla ayri parent aramasi; recall-guvenli birlesim.
 
@@ -200,7 +252,7 @@ def _parent_union(
         parts_seen.add(part)
         merged, bm25, knn, max_bm25 = _pool_with_raw_scores(
             part, "parent", extra_filters=None, size=size,
-            search_fn=search_fn, search_knn_fn=search_knn_fn,
+            search_fn=search_fn, search_knn_fn=search_knn_fn, cosine_fn=cosine_fn,
         )
         cands = _attach_signals(
             merged, bm25_by_id=bm25, knn_by_id=knn, max_bm25=max_bm25, query_text=query
@@ -229,6 +281,9 @@ def _parent_union(
         if pid is None or pid in ids_seen:
             continue
         ids_seen.add(pid)
+        # enjekte adayin kosinusu da hesaplanir (raw'da embedding yok -> mget yolu);
+        # hesaplanamazsa None kalir ("vektor yok/alinamadi").
+        cos_map = cosine_fn(hyp.institution_part, [{"id": pid, "record_type": "parent"}])
         union.append(
             ScoredCandidate(
                 id=pid,
@@ -236,7 +291,7 @@ def _parent_union(
                 name=name,
                 raw={"id": pid, "record_type": "parent", "name": name, "from_hypothesis_only": True},
                 bm25_norm=0.0,
-                cosine=None,
+                cosine=cos_map.get(pid),
                 token_set_ratio=fuzz.token_set_ratio(query_norm, normalize(name).base_no_accent),
                 qualifier_conflict=qualifiers_conflict(query_quals, extract_qualifiers(name)),
             )
@@ -269,21 +324,25 @@ def resolve(
     search_fn: PoolSearchFn = _default_search,
     search_knn_fn: PoolSearchFn = _default_search_knn,
     decompose_search_fn: Callable[[str, str], list[dict[str, Any]]] | None = None,
+    cosine_fn: CosineFn = _default_cosine_fn,
 ) -> ResolveResult:
     """Coklu-hipotezli, recall-yonelimli cascade: her hipotezle parent ara ve
     birlestir, subunit'i makul parent'larin tamamiyla (terms) filtrele +
-    filtresizle birlestir (recall-guvenli), her adaya sinyal ekle."""
+    filtresizle birlestir (recall-guvenli), her adaya sinyal ekle (kosinus
+    dahil - kNN listesine girmeyenler icin cosine_fn ile hesaplanir)."""
     dsf = decompose_search_fn or (lambda text, rt: search_fn(text, rt, size=10))
     decomposed = decompose(query, search_fn=dsf)
 
     parents = _parent_union(
-        decomposed, query, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn
+        decomposed, query, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn,
+        cosine_fn=cosine_fn,
     )
 
     cascade_ids = _cascade_parent_ids(parents, decomposed)
 
     sub_unfiltered, s_bm25, s_knn, s_max_bm25 = _pool_with_raw_scores(
-        query, "subunit", extra_filters=None, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn
+        query, "subunit", extra_filters=None, size=size, search_fn=search_fn,
+        search_knn_fn=search_knn_fn, cosine_fn=cosine_fn,
     )
 
     if cascade_ids:
@@ -294,6 +353,7 @@ def resolve(
             size=size,
             search_fn=search_fn,
             search_knn_fn=search_knn_fn,
+            cosine_fn=cosine_fn,
         )
     else:
         sub_filtered, sf_bm25, sf_knn, sf_max_bm25 = [], {}, {}, 1.0

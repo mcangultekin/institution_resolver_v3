@@ -123,6 +123,30 @@ def search_knn(
     return [{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
 
 
+def fetch_embeddings(
+    doc_ids: list[str],
+    *,
+    client: Elasticsearch | None = None,
+    index: str | None = None,
+) -> dict[str, list[float]]:
+    """Belge `_id`'lerinden ("record_type:id") embedding vektorlerini ceker (mget).
+
+    Doner: {raw id -> vektor}. Bulunamayan/embeddingsiz belgeler atlanir.
+    Kullanim: havuza arama sonucu olarak DEGIL enjeksiyonla girmis adaylarin
+    (raw'inda embedding tasimayan) kosinusunu doldurmak (bkz. retrieve/resolve.py).
+    """
+    if not doc_ids:
+        return {}
+    client = client or get_client()
+    index = index or es_config()["index"]
+    resp = client.mget(index=index, ids=doc_ids, source_includes=["id", "embedding"])
+    out: dict[str, list[float]] = {}
+    for d in resp["docs"]:
+        if d.get("found") and d["_source"].get("embedding"):
+            out[d["_source"]["id"]] = d["_source"]["embedding"]
+    return out
+
+
 def rrf_merge(
     rank_lists: list[list[dict[str, Any]]], *, k: int = 60, size: int = 50
 ) -> list[dict[str, Any]]:
