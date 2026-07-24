@@ -158,6 +158,52 @@ class TestCandidateViews:
         assert p_views[0].exact_match is True
 
 
+class TestCandidateTrimming:
+    """2026-07-24, canli bulgu ("Ege University" ornegi): uzun/gurultulu aday
+    listesi (18 parent) E2B'yi yaniltiyordu, 5'e kirpilinca dogru cevabi
+    buldu. `build_candidate_views` artik hakeme giden goruntuyu kirpar -
+    `resolve()`'un kendi ic havuzu ETKILENMEZ (bkz. candidates.py docstring'i)."""
+
+    def _many_parents(self, n: int, exact_ids: set[str] | None = None) -> list[ScoredCandidate]:
+        exact_ids = exact_ids or set()
+        return [
+            ScoredCandidate(
+                id=str(i),
+                record_type="parent",
+                name=f"Kurum {i}",
+                raw={},
+                bm25_norm=1.0 - i * 0.01,
+                cosine=None,
+                token_set_ratio=50.0,
+                qualifier_conflict=False,
+                exact_match=str(i) in exact_ids,
+            )
+            for i in range(n)
+        ]
+
+    def test_trims_to_max_candidates(self):
+        result = ResolveResult(
+            query="q", decomposed=_decomposed(), parents=self._many_parents(18), subunits=[]
+        )
+        p_views, _ = build_candidate_views(result, max_candidates=8)
+        assert len(p_views) == 8
+
+    def test_exact_match_survives_trim_even_if_late_in_list(self):
+        # gercek "Ege" ornegindeki gibi: dogru cevap ONDE olsa bile, guvenlik
+        # icin - SONDA da olsa exact_match asla disari atilmamali.
+        parents = self._many_parents(18, exact_ids={"17"})  # son sirada
+        result = ResolveResult(query="q", decomposed=_decomposed(), parents=parents, subunits=[])
+        p_views, _ = build_candidate_views(result, max_candidates=8)
+        assert any(v.id == "17" for v in p_views)
+
+    def test_no_trim_when_pool_already_small(self):
+        result = ResolveResult(
+            query="q", decomposed=_decomposed(), parents=self._many_parents(3), subunits=[]
+        )
+        p_views, _ = build_candidate_views(result, max_candidates=8)
+        assert len(p_views) == 3
+
+
 class TestJudgeHappyPath:
     def test_parent_matched_subunit_none_when_not_requested(self):
         payload = {
