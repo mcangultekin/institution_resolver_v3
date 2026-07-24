@@ -1,7 +1,7 @@
 # DURUM ve PLAN — Institution Resolver v3
 
 > Bu dosya devamlılık içindir: oturum kapanıp açılsa da (veya yeni bir Claude
-> oturumu) buradan tam bağlamı alır. Güncel tut. Son güncelleme: 2026-07-23.
+> oturumu) buradan tam bağlamı alır. Güncel tut. Son güncelleme: 2026-07-24.
 
 ## Amaç
 
@@ -53,7 +53,7 @@ Girdi → NORMALIZE → ELASTICSEARCH (aday havuzu: parent + subunit)
 | **retrieve/ 1b** | Çoklu-hipotez + alias-farkındalıklı decompose + çoklu-parent cascade | ✅ BİTTİ (2026-07-23) |
 | **F2** | Gerçek sette recall@k ölç | ❌ İPTAL (kullanıcı kararı — bkz. Sıradaki İşler 3) |
 | F3 (kalan) | deterministik gate | — |
-| F4 | LLM hakem katmanı (tek çağrı parse+judge) + doğrulayıcılar + gerçek sette ölç | — |
+| **F4** | LLM hakem katmanı (`judge/` paketi: client+prompt+schema+candidates+doğrulayıcılar) — **Gemma 4 E2B, Ollama (yerel)** | ✅ BİTTİ (bkz. aşağıda) |
 | F5 | Batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü | — |
 
 **F2 revizyon notu (Ayrım 0):** karar katmanını optimize etmeden ÖNCE gerçek sette
@@ -149,9 +149,92 @@ Yapılanlar (tümü test-kilitli, 119 test yeşil):
 Yerine: retrieval recall-yönelimli tutulur (1b), seçim F4 hakeme bırakılır, doğrulama
 sorgu başına gözle/duman testiyle yapılır. (v2 `real_labeled.csv` HATALI, kullanma.)
 
-### 4. F4 — LLM hakem  [ANTHROPIC API GEREKTİRİR]
-Adaylar + sinyaller → LLM doğru olanı seçer → `auto_match/review/ambiguous/no_match` + JSON.
-Yetki asimetrisi (LLM düşürür, deterministik kanıt yükseltir) — karar bekliyor.
+### 4. F4 — LLM hakem  ✅ BİTTİ (2026-07-24)
+
+**Claude/Anthropic bu katmanda KULLANILMIYOR** (kullanıcı kararı, maliyet —
+proje şirkete ait, canlıya (API endpoint) alınacak gerçek bir sistem).
+Yerine: **Gemma 4** (Google, 2026-04, Apache 2.0), yerelde **Ollama** üzerinden
+(`gemma4:e2b`/`gemma4:e4b` — Ollama'nın kendi kütüphanesi; `hf.co/google/...`
+DOĞRUDAN import Ollama 0.32.3'te "gemma4" mimarisi için 400 hatası verdi,
+kullanılmadı).
+
+**Tasarım (Pécs örneği tartışması, korunan kararlar):**
+- Hipotezler yalnız PARENT sınırı hipotezidir; hakeme HAM METİN verilir (tam
+  orijinal sorgu + her hipotezin kurum kısmı) — ÖN-YAPILANDIRMA YOK (virgül-
+  segmentasyonu dahil). "Hangi kelime birim, hangisi konum/çöp" ayrımını LLM
+  ham metinden kendisi yapar.
+- Karar parent ve subunit için AYRI (`JudgeResult.parent` + opsiyonel
+  `JudgeResult.subunit`; `subunit=None` = "sorguda hiç istenmedi", ayrı bir
+  şey `SubunitDecision(verdict="no_match")` = "istendi ama katalogda yok").
+  `parent=auto_match + subunit=no_match` birinci sınıf, geçerli bir sonuç.
+- Aday paketine `country/city/kind_label/parent_name` girdi (subunit'in
+  country/city'si YOK — ES şemasına dokunmadan, aynı `resolve()` çağrısındaki
+  parent listesinden `parent_id` ile JOIN edilir, bkz. `judge/candidates.py`).
+- Kosinüs bandı dar uyarısı prompt'ta var (`judge/prompt.py`).
+
+**Modül yapısı (`judge/`):** `client.py` (Ollama HTTP, kalıcı `httpx.Client`,
+`LlmClient` Protocol — saglayicidan bagimsiz) · `candidates.py` (aday paketleme)
+· `prompt.py` (ham-metin prompt) · `schema.py` (`JudgeResult` pydantic, id
+int/"null"-string normalizasyonu) · `judge.py` (orkestrasyon + halüsinasyon-id
+doğrulayıcı + anlaşılır Türkçe hata mesajları — pydantic'in ham jargonu
+kullanıcıya sızdırılmaz, bkz. `_format_validation_error`). CLI: `inres3 judge
+"<sorgu>" [--model] [--top]` (süre + isim+id gösterir, hata durumunda düzgün
+mesajla `Exit(1)`, traceback değil).
+
+**Model seçimi — E2B vs E4B (50-sorgu karşılaştırması):**
+> **TAM RAPOR:** `DENEY_2026-07-24_gemma_e2b_e4b_karsilastirma.md` — `isimler_
+> tekrarsız.csv`den seed=42, 5 kategoriye (kurum+birim/sadece-kurum/kurum-
+> ortada/TR/EN) stratifiye 50 sorgu, tüm ham sonuçlar tablo halinde.
+
+**E2B seçildi:** daha hızlı (~25s→~5-8s/çağrı sıcak, düzeltmelerden sonra ~2.6-3s)
+VE şema-uyumu daha yüksek (düzeltme sonrası 44/50 vs E4B 38/50 geçerli çıktı).
+Ama E2B'nin en az bir açık örnekte (şirket-adı sorgusu "MPG Makine...") E4B'den
+daha kötü muhakeme ettiği görüldü (E2B yanlış auto_match, E4B doğru no_match) —
+karar hız/format lehine verildi, muhakeme kalitesi konusunda E4B'den kesin
+üstün olmadığı bilinerek. **E4B yerel Ollama'dan silindi** (`ollama rm gemma4:e4b`).
+
+**Performans teşhisi ve düzeltmeleri (2026-07-24, kullanıcı talebiyle):**
+- **Gerçek hata (düzeltildi):** `client.py` her çağrıda `httpx.post()` (havuzsuz,
+  tek-atış) kullanıyordu — kalıcı `httpx.Client`e geçilince duvar-saati/Ollama'nın
+  kendi `total_duration`'ı farkı 5-8s'den 0.01s'ye düştü.
+  Ayrıca 50-sorgu testinde E2B↔E4B ARDIŞIK çağrılıyordu — ikisi VRAM'e (11.8GB)
+  birden sığmadığı (7.2+9.6=16.8GB) için HER geçişte 7-23s model yeniden yükleme
+  maliyeti oluşuyordu; production'da TEK model kullanılınca bu sorun kalmıyor.
+- **Ruled out (bug değil):** Ollama zaten HTTP API ile çağrılıyordu (subprocess
+  değil); "thinking modu" bu model/sürümde ölçülebilir bir token maliyeti
+  yaratmıyor (`think=true/false` fark etmedi); ES client'ı paylaşmak sadece
+  ~1ms fark yaratıyor (reconnect sorunu YOK).
+- **`decompose()` O(n²) gerçek ve kanıtlı** (bug değil, algoritmik): 5 token→0.4s,
+  20 token→9.6s. Bilinen açık madde (aşağıda, `_msearch` batch'leme) — bu oturumda
+  DOKUNULMADI.
+- **`reasoning` alanı KALDIRILDI** (kullanıcı kararı, hız): sade `verdict+
+  matched_id` yeterli; üretilen token ~200→~87'ye düştü, sıcak LLM çağrısı
+  ~5-8s→~2.6-3s'ye indi. review/ambiguous durumlarda "neden emin değil"
+  bilgisi kaybı bilinen bir ödün (decide/ katmanında ihtiyaç çıkarsa geri
+  gelebilir).
+- **Sonuç (tipik kısa/orta sorgu, tek model, sıcak):** ~33s/satır → **~4-7s/satır**
+  (resolve ~1-4s + LLM ~2.6-3s). Uzun sorgularda (20+ token) decompose'un O(n²)
+  maliyeti hâlâ baskın.
+
+**Bağımlılık/config değişiklikleri:** `pyproject.toml` `llm` extra'sı
+`anthropic`→`httpx`. `config/default.yaml` `judge.model: "gemma4:e2b"`,
+`judge.backend: "ollama"`, `judge.host`. `judge.enabled` hâlâ `false` (F5 batch
+entegrasyonundan önce açılacak).
+
+**Yan not (ortam):** `brew install ollama`, bağımlılık olarak `python@3.14`
+kurup `/opt/homebrew/bin/python3`'ü projenin asıl Python'unun (python.org
+Framework build) önüne geçirdi — `brew unlink python@3.14` ile düzeltildi.
+Gelecekte benzer bir `brew install` sonrası `python3`/`pip` beklenmedik
+davranırsa önce `which python3` kontrol edilmeli.
+
+**Kalan (F4 kapsamı dışı, bilerek ertelendi):**
+- "Yetki asimetrisi" (LLM auto'ya terfi edebilir mi?) — `decide/` katmanı
+  henüz yazılmadı, hâlâ açık karar.
+- Gate katmanı (F3 kalan) yok — her sorgu LLM'e gidiyor.
+- Hata durumunda retry/fallback davranışı tanımsız (CLI şu an sadece düzgün
+  mesajla duruyor, otomatik bir şey yapmıyor).
+- `decompose()` batch'leme (`_msearch`) — uzun sorgularda hâlâ en büyük tekil
+  yavaşlık kaynağı.
 
 ### 5. F5 — batch (resume/memoization) + çıktı + EXPERIMENTS günlüğü
 
@@ -218,8 +301,13 @@ inres3 setup-es          # index + analyzer
 inres3 index             # 231K kaydı yükle + force-merge
 inres3 match "gazi üniversitesi istatistik bölümü"
 
+# LLM hakem (F4) - Ollama + Gemma 4 E2B yerelde kurulu olmali
+brew install ollama && brew services start ollama
+ollama pull gemma4:e2b              # hf.co/ dogrudan-import DEGIL, curated tag
+inres3 judge "gazi üniversitesi istatistik bölümü" --model gemma4:e2b
+
 # testler
-python3 -m pytest tests/unit -q     # 108 test
+python3 -m pytest tests/unit -q     # 135 test (llm-marked testler Ollama calisiyorsa gercek cagri yapar, yoksa skip)
 ```
 
 ## Kritik gerçekler (ham veri, ölçüldü)
@@ -242,6 +330,10 @@ python3 -m pytest tests/unit -q     # 108 test
   `extra_filters` ile parent_id cascade filtresi destekler)
 - `retrieve/decompose.py` — ES-destekli kurum/birim sınır tespiti (kural değil, korpusa sorma)
 - `retrieve/resolve.py` — parent-first cascade + sinyaller (`ScoredCandidate`)
+- `judge/client.py` — Ollama HTTP client (kalıcı bağlantı, `LlmClient` Protocol)
+- `judge/candidates.py` `prompt.py` `schema.py` `judge.py` — F4 hakem: aday paketleme,
+  ham-metin prompt, pydantic çıktı şeması, orkestrasyon+doğrulayıcı
+- `docs/DENEY_2026-07-24_gemma_e2b_e4b_karsilastirma.md` — E2B/E4B model seçimi kanıtı
 - `docs/V3_BASLANGIC_REHBERI.md` `V3_VERI_PLANI.md` — orijinal tasarım (ilham, şartname değil)
 
 ## Çalışma tarzı (önemli)

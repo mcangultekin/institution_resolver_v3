@@ -106,5 +106,50 @@ def match_cmd(
         )
 
 
+@app.command("judge")
+def judge_cmd(
+    query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
+    model: str = typer.Option(None, "--model", help="Ollama model tag (varsayilan: config judge.model)"),
+    top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+) -> None:
+    """Tek sorgu: retrieve.resolve() + LLM hakem (F4, Ollama/Gemma - Claude KULLANILMIYOR)."""
+    import time
+
+    from institution_resolver_v3.config import load_config
+    from institution_resolver_v3.judge.client import LlmError, OllamaClient
+    from institution_resolver_v3.judge.judge import JudgeValidationError, judge as run_judge
+    from institution_resolver_v3.retrieve.resolve import resolve
+
+    cfg = load_config()["judge"]
+    client = OllamaClient(model=model or cfg["model"], host=cfg["host"])
+
+    t0 = time.time()
+    result = resolve(query, size=top)
+    t1 = time.time()
+    try:
+        verdict = run_judge(result, client)
+    except (JudgeValidationError, LlmError) as exc:
+        typer.echo(f"HAKEM HATASI: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    t2 = time.time()
+
+    def _name_of(matched_id: str | None, pool) -> str:
+        if matched_id is None:
+            return ""
+        return next((c.name for c in pool if c.id == matched_id), "?")
+
+    p_name = _name_of(verdict.parent.matched_id, result.parents)
+    typer.echo(f"parent   : {verdict.parent.verdict:12s} {p_name:35s} id={verdict.parent.matched_id or '—'}")
+    if verdict.subunit is not None:
+        s_name = _name_of(verdict.subunit.matched_id, result.subunits)
+        typer.echo(f"subunit  : {verdict.subunit.verdict:12s} {s_name:35s} id={verdict.subunit.matched_id or '—'}")
+    else:
+        typer.echo("subunit  : (sorguda istenmedi)")
+    typer.echo(
+        f"\n[süre]     resolve={t1 - t0:.2f}s  llm={t2 - t1:.2f}s  toplam={t2 - t0:.2f}s"
+        "  (not: embedding modeli her CLI cagrisinda ayrica yuklenir, bu 'toplam'a girmez)"
+    )
+
+
 if __name__ == "__main__":
     app()

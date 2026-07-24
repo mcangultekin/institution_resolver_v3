@@ -32,8 +32,14 @@ gate:                            # esikler F3/F4'ten SONRA, gercek sette ayarlan
   clear_win_margin: 0.15
 
 judge:
-  enabled: false                 # F4'e kadar kapali
-  model: "claude-haiku-4-5-20251001"
+  enabled: false                 # F4 gelistirme asamasinda; batch entegrasyonu (F5) oncesi ac
+  backend: "ollama"              # Claude/Anthropic bu katmanda KULLANILMIYOR (maliyet karari, 2026-07-24)
+  host: "http://localhost:11434"
+  # E2B secildi (2026-07-24, 50-sorgu E2B/E4B karsilastirmasi sonrasi - E4B daha
+  # yavas + sema-uyumu daha dusuktu, bkz. docs/DENEY_2026-07-24_gemma_e2b_e4b_karsilastirma.md).
+  # Ollama'nin kendi kutuphanesindeki curated tag kullanilir - hf.co/ dogrudan-import
+  # denendi, "gemma4" mimarisi icin 400 hatasi verdi (Ollama 0.32.3, canli dogrulandi).
+  model: "gemma4:e2b"
   cache_dir: "llm_cache"
   auto_confidence: 0.90          # DANISMAN; auto_match tek basina buna dayanmaz (Ayrim 3)
 

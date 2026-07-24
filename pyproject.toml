@@ -15,7 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 embed = ["sentence-transformers>=2.7"]   # F3: kNN/embedding
-llm = ["anthropic>=0.40"]                # F4: hakem
+llm = ["httpx>=0.27"]                    # F4: hakem - Ollama HTTP client (Anthropic bu katmanda KULLANILMIYOR, maliyet karari)
 
 [project.scripts]
 inres3 = "institution_resolver_v3.cli.main:app"

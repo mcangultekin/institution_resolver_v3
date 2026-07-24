@@ -1,15 +1,22 @@
-"""LLM karar katmani: gri bandin nihai hakemi.
+"""LLM karar katmani (F4) - gri bandin nihai hakemi.
 
-Tek cagri hem girdiyi parcalar (institution / unit / qualifier) hem karar verir.
-Girdi: sorgu + parent top-5 + subunit top-10 (aday basina kompakt sinyal kirilimi).
-Cikti: kisitli JSON (verdict = MATCH|NONE|AMBIGUOUS|NOT_APPLICABLE + id + reason).
+resolve() aday havuzunu + sinyalleri hakeme (Gemma 4, yerel/Ollama - Claude
+KULLANILMIYOR, bkz. docs/DURUM.md maliyet karari) HAM METIN olarak sunar,
+tek cagriyla PARENT ve SUBUNIT icin AYRI karar alir.
 
 Icerik:
-- prompt.py     : kurallar (id yalniz listeden; qualifier celiskisi; parent-tutarlilik;
-                  kisa-akronim -> AMBIGUOUS; kurum-degil -> NOT_INSTITUTION; ceviri esdegerligi)
-- client.py     : LLM cagrisi + normalize-sorgu anahtarli cache + batch async
-- validators.py : 3 kod-tarafi dogrulayici (halusinasyon id / qualifier / parent-tutarlilik)
+- client.py     : Ollama HTTP cagrisi (LlmClient Protocol - saglayicidan bagimsiz)
+- candidates.py : ResolveResult -> hakem-hazir aday (country/city/kind_label/parent_name)
+- prompt.py     : ham-metin prompt kurucu (on-yapilandirma yok, kosinus-bandi uyarisi)
+- schema.py     : JudgeResult (ParentDecision + opsiyonel SubunitDecision)
+- judge.py      : orkestrasyon + dogrulayici (JSON parse, sema, id-halusinasyonu)
 
-Yetki asimetrisi (Ayrim 3, karar bekliyor): LLM serbestce DUSURUR; auto_match'e
-terfi ancak deterministik kanitla birlikte. Dogrulayici ihlali -> her zaman review.
+verdict degerleri: auto_match / review / ambiguous / no_match (DURUM.md ile
+birebir - eski "MATCH/NONE/AMBIGUOUS/NOT_APPLICABLE" taslagi burada terk
+edildi, tutarlilik icin).
+
+Yetki asimetrisi (docs/DURUM.md "Acik kararlar" - HALA KARARLASTIRILMADI):
+LLM auto_match'e serbestce terfi edebilir mi, yoksa sadece deterministik
+kanitla mi yukselir? Bu modul VARSAYIM YAPMAZ - ham JudgeResult'i dondurur,
+karari decide/ katmani (henuz yazilmadi) verecek.
 """
