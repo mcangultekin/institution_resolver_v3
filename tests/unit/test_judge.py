@@ -98,6 +98,15 @@ class TestPrompt:
         prompt = build_prompt(result.query, result.decomposed, parents, subunits)
         assert "no_match" in prompt and "auto_match" in prompt
 
+    def test_exact_match_shown_per_candidate(self):
+        # 2026-07-24, kullanici talebi: tam-eslesme sinyali prompt'ta gorunmeli
+        # (token_benzerlik=100'den AYRI bir kanit, bkz. prompt.py "TAM_EŞLEŞME NOTU").
+        result = _result()
+        result.parents[0].exact_match = True
+        parents, subunits = build_candidate_views(result)
+        prompt = build_prompt(result.query, result.decomposed, parents, subunits)
+        assert "tam_eşleşme=EVET" in prompt
+
 
 class TestCandidateViews:
     def test_subunit_inherits_country_city_from_parent(self):
@@ -141,6 +150,12 @@ class TestCandidateViews:
         _, s_views = build_candidate_views(result)
         assert s_views[0].country is None
         assert s_views[0].city is None
+
+    def test_exact_match_propagated(self):
+        result = _result()
+        result.parents[0].exact_match = True
+        p_views, _ = build_candidate_views(result)
+        assert p_views[0].exact_match is True
 
 
 class TestJudgeHappyPath:

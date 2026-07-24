@@ -214,3 +214,63 @@ class TestResolveSignals:
         for cand in result.parents + result.subunits:
             assert cand.cosine is not None
             assert abs(cand.cosine - 0.9) < 1e-9  # (c+1)/2 -> 2s-1 gidis-donusu kayipsiz
+
+    def test_exact_match_false_despite_full_token_overlap(self):
+        # token_set_ratio=100 fazla kelimeye toleransli (sorguda "istatistik
+        # bolumu" fazladan var) - exact_match bunu KARISTIRMAZ, TAM dizge
+        # esitligi ister (bkz. resolve.py ScoredCandidate.exact_match).
+        result = resolve(
+            "gazi üniversitesi istatistik bölümü",
+            search_fn=_fake_search_fn,
+            search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
+        )
+        assert result.parents[0].token_set_ratio == 100.0
+        assert result.parents[0].exact_match is False
+
+
+class TestExactMatchSignal:
+    """2026-07-24, kullanici talebi: sorgu (normalize) adayin adi/alias'larindan
+    BIRIYLE BIREBIR ayniysa exact_match=True - "P" bayragiyla ayni mantik,
+    ayri/guclu bir kanit (bkz. resolve.py, judge/prompt.py "TAM_EŞLEŞME NOTU")."""
+
+    _POOL = [
+        {"id": "1", "record_type": "parent", "name": "Gazi Üniversitesi", "aliases": []},
+        {"id": "2", "record_type": "parent", "name": "GÜ", "aliases": ["Gazi Universitesi"]},
+    ]
+
+    def _search(self, text, record_type, *, extra_filters=None, size=50):
+        if record_type != "parent":
+            return []
+        qt = set(normalize(text).base_no_accent.split())
+        hits = [h for h in self._POOL if qt & set(normalize(h["name"]).base_no_accent.split())]
+        return _score(hits)
+
+    def test_exact_name_match(self):
+        result = resolve(
+            "gazi üniversitesi",
+            search_fn=self._search,
+            search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
+        )
+        by_id = {c.id: c for c in result.parents}
+        assert by_id["1"].exact_match is True
+
+    def test_exact_alias_match(self):
+        # "GÜ" adi tek basina query ile eslesmiyor (search_fn tokenle buluyor
+        # olsa da) - burada dogrudan aday havuzuna girdigini varsayiyoruz,
+        # asil test: alias listesindeki deger sorguyla BIREBIR uysun.
+        def search_with_gu(text, record_type, *, extra_filters=None, size=50):
+            if record_type != "parent":
+                return []
+            return _score(self._POOL)  # ikisini de dondur (search kalitesini test etmiyoruz)
+
+        result = resolve(
+            "gazi universitesi",  # aksansiz - alias "Gazi Universitesi" ile TAM ayni normalize
+            search_fn=search_with_gu,
+            search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
+        )
+        by_id = {c.id: c for c in result.parents}
+        assert by_id["2"].exact_match is True
+        assert by_id["1"].exact_match is True  # "Gazi Üniversitesi" de ayni normalize'a denk gelir

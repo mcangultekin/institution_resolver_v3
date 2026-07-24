@@ -97,6 +97,11 @@ class ScoredCandidate:
     token_set_ratio: float = 0.0
     qualifier_conflict: bool = False
     passed_parent_filter: bool | None = None  # sadece subunit icin anlamli
+    # Sorgu (normalize hali) adayin ADI ya da ALIAS'LARINDAN BIRIYLE BIREBIR
+    # ayniysa True (token_set_ratio=100 ile KARISTIRILMASIN - tsr fazladan
+    # kelimeye toleransli, bu alan TAM dizge esitligi ister). 2026-07-24,
+    # kullanici talebi - "P" bayragiyla ayni mantik: guclu, ayri bir kanit.
+    exact_match: bool = False
 
 
 @dataclass
@@ -193,6 +198,8 @@ def _attach_signals(
         cosine = (2.0 * knn_raw - 1.0) if knn_raw is not None else None
         tsr = fuzz.token_set_ratio(query_norm, name_norm)
         conflict = qualifiers_conflict(query_quals, extract_qualifiers(name))
+        alias_norms = {normalize(a).base_no_accent for a in (h.get("aliases") or [])}
+        exact = query_norm == name_norm or query_norm in alias_norms
         out.append(
             ScoredCandidate(
                 id=h["id"],
@@ -204,6 +211,7 @@ def _attach_signals(
                 token_set_ratio=tsr,
                 qualifier_conflict=conflict,
                 passed_parent_filter=h.get("passed_parent_filter"),
+                exact_match=exact,
             )
         )
     return out
@@ -294,6 +302,7 @@ def _parent_union(
                 cosine=cos_map.get(pid),
                 token_set_ratio=fuzz.token_set_ratio(query_norm, normalize(name).base_no_accent),
                 qualifier_conflict=qualifiers_conflict(query_quals, extract_qualifiers(name)),
+                exact_match=query_norm == normalize(name).base_no_accent,
             )
         )
     return union

@@ -90,8 +90,9 @@ def match_cmd(
 
     typer.echo("\n=== PARENT ===")
     for c in result.parents:
+        exact = "E" if c.exact_match else " "
         typer.echo(
-            f"  bm25={c.bm25_norm:.3f}  cos={_cos(c)}  tsr={c.token_set_ratio:5.1f}  "
+            f"  [{exact}] bm25={c.bm25_norm:.3f}  cos={_cos(c)}  tsr={c.token_set_ratio:5.1f}  "
             f"{c.id:>8}  {c.name[:45]}"
         )
 
@@ -99,9 +100,10 @@ def match_cmd(
     for c in result.subunits:
         flag = "P" if c.passed_parent_filter else " "
         conflict = "!" if c.qualifier_conflict else " "
+        exact = "E" if c.exact_match else " "
         extra = f"  parent={c.raw.get('parent_name', '')[:25]}"
         typer.echo(
-            f"  [{flag}{conflict}] bm25={c.bm25_norm:.3f}  cos={_cos(c)}  tsr={c.token_set_ratio:5.1f}  "
+            f"  [{flag}{conflict}{exact}] bm25={c.bm25_norm:.3f}  cos={_cos(c)}  tsr={c.token_set_ratio:5.1f}  "
             f"{c.id:>8}  {c.name[:40]}{extra}"
         )
 
@@ -133,16 +135,22 @@ def judge_cmd(
         raise typer.Exit(code=1) from None
     t2 = time.time()
 
-    def _name_of(matched_id: str | None, pool) -> str:
+    def _candidate_of(matched_id: str | None, pool):
         if matched_id is None:
-            return ""
-        return next((c.name for c in pool if c.id == matched_id), "?")
+            return None
+        return next((c for c in pool if c.id == matched_id), None)
 
-    p_name = _name_of(verdict.parent.matched_id, result.parents)
+    p_cand = _candidate_of(verdict.parent.matched_id, result.parents)
+    p_name = p_cand.name if p_cand else ""
     typer.echo(f"parent   : {verdict.parent.verdict:12s} {p_name:35s} id={verdict.parent.matched_id or '—'}")
     if verdict.subunit is not None:
-        s_name = _name_of(verdict.subunit.matched_id, result.subunits)
-        typer.echo(f"subunit  : {verdict.subunit.verdict:12s} {s_name:35s} id={verdict.subunit.matched_id or '—'}")
+        s_cand = _candidate_of(verdict.subunit.matched_id, result.subunits)
+        s_name = s_cand.name if s_cand else ""
+        s_parent = f" ({s_cand.raw.get('parent_name')})" if s_cand and s_cand.raw.get("parent_name") else ""
+        s_display = f"{s_name}{s_parent}"
+        typer.echo(
+            f"subunit  : {verdict.subunit.verdict:12s} {s_display:45s} id={verdict.subunit.matched_id or '—'}"
+        )
     else:
         typer.echo("subunit  : (sorguda istenmedi)")
     typer.echo(

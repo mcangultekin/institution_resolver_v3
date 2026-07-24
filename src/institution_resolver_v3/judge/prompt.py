@@ -38,6 +38,7 @@ def _fmt_parent(c: CandidateView) -> str:
         f"  id={c.id}  ad=\"{c.name}\"  {loc}\n"
         f"    bm25={c.bm25_norm:.3f}  kosinüs={_fmt_cosine(c.cosine)}  "
         f"token_benzerlik={c.token_set_ratio:.1f}  nitelik_çelişkisi={'evet' if c.qualifier_conflict else 'hayır'}"
+        f"  tam_eşleşme={'EVET' if c.exact_match else 'hayır'}"
     )
 
 
@@ -49,6 +50,7 @@ def _fmt_subunit(c: CandidateView) -> str:
         f"tür=\"{c.kind_label or '?'}\"  {loc}{flag}\n"
         f"    bm25={c.bm25_norm:.3f}  kosinüs={_fmt_cosine(c.cosine)}  "
         f"token_benzerlik={c.token_set_ratio:.1f}  nitelik_çelişkisi={'evet' if c.qualifier_conflict else 'hayır'}"
+        f"  tam_eşleşme={'EVET' if c.exact_match else 'hayır'}"
     )
 
 
@@ -88,6 +90,13 @@ KURUM ADAYLARI (parent):
 
 ALT-BİRİM ADAYLARI (subunit):
 {subunit_lines}
+
+TAM_EŞLEŞME NOTU: "tam_eşleşme=EVET", sorgunun (normalize edilmiş hali) bu
+adayın adıyla ya da bilinen bir yazım/alias'ıyla BİREBİR aynı olduğu anlamına
+gelir - token_benzerlik=100'den DAHA GÜÇLÜ bir kanıttır (o fazla/az kelimeye
+tolerans gösterir, tam_eşleşme göstermez). Ama tek başına "doğru SEVİYEDE"
+olduğu anlamına gelmez - ör. sorguda bölüm isteniyorsa ve tam_eşleşme veren
+aday aslında bir FAKÜLTEyse, bu hâlâ yanlış seviyede bir cevap olabilir.
 
 KOSİNÜS UYARISI: Kosinüs bandı dar - alakasız adaylar bile +0.75/+0.85 gibi
 yüksek değerler alabiliyor. MUTLAK bir eşik YOK; adaylar ARASI GÖRELİ farka ve

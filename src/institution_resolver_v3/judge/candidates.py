@@ -26,6 +26,7 @@ class CandidateView:
     token_set_ratio: float
     qualifier_conflict: bool
     passed_parent_filter: bool | None
+    exact_match: bool = False
     country: str | None = None
     city: str | None = None
     kind_label: str | None = None
@@ -41,6 +42,7 @@ def _parent_view(c: ScoredCandidate) -> CandidateView:
         token_set_ratio=c.token_set_ratio,
         qualifier_conflict=c.qualifier_conflict,
         passed_parent_filter=c.passed_parent_filter,
+        exact_match=c.exact_match,
         country=c.raw.get("country"),
         city=c.raw.get("city"),
     )
@@ -57,6 +59,7 @@ def _subunit_view(c: ScoredCandidate, parent_context: dict[str, ScoredCandidate]
         token_set_ratio=c.token_set_ratio,
         qualifier_conflict=c.qualifier_conflict,
         passed_parent_filter=c.passed_parent_filter,
+        exact_match=c.exact_match,
         country=(parent.raw.get("country") if parent else None),
         city=(parent.raw.get("city") if parent else None),
         kind_label=c.raw.get("kind_label_raw"),
