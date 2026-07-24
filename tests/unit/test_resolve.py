@@ -215,17 +215,39 @@ class TestResolveSignals:
             assert cand.cosine is not None
             assert abs(cand.cosine - 0.9) < 1e-9  # (c+1)/2 -> 2s-1 gidis-donusu kayipsiz
 
-    def test_exact_match_false_despite_full_token_overlap(self):
-        # token_set_ratio=100 fazla kelimeye toleransli (sorguda "istatistik
-        # bolumu" fazladan var) - exact_match bunu KARISTIRMAZ, TAM dizge
-        # esitligi ister (bkz. resolve.py ScoredCandidate.exact_match).
+    def test_exact_match_true_when_name_is_contiguous_part_of_query(self):
+        # 2026-07-24 revizyonu (kullanici bulgusu): birlesik "kurum+birim"
+        # sorgularinda kurum adi sorgunun SADECE bir parcasidir - ilk surum
+        # TAM sorgu==ad esitligi istiyordu, bu yuzden bu (en yaygin!) durumda
+        # HICBIR ZAMAN True olmuyordu. Simdi: ad, sorgunun ARDIŞIK bir
+        # parcasiysa (kelime siniri gozetilerek) True.
         result = resolve(
             "gazi üniversitesi istatistik bölümü",
             search_fn=_fake_search_fn,
             search_knn_fn=_fake_search_knn_fn,
             cosine_fn=_no_cosine_fn,
         )
-        assert result.parents[0].token_set_ratio == 100.0
+        assert result.parents[0].exact_match is True
+
+    def test_exact_match_false_when_name_tokens_not_contiguous(self):
+        # token_set_ratio SIRA/BITISIKLIK gozetmez (token kumesi orten her
+        # sey yuksek skor alir) - exact_match bunu KARISTIRMAZ, adin
+        # kelimeleri sorguda ARDIŞIK gecmiyorsa (araya baska kelime girmisse)
+        # False kalir.
+        def search_fn(text, record_type, *, extra_filters=None, size=50):
+            if record_type != "parent":
+                return []
+            qt = set(normalize(text).base_no_accent.split())
+            hits = [h for h in _PARENT_POOL if qt & set(normalize(h["name"]).base_no_accent.split())]
+            return _score(hits)
+
+        result = resolve(
+            "gazi istatistik üniversitesi",  # "istatistik" GAZI ile ÜNİVERSİTESİ arasina girmis
+            search_fn=search_fn,
+            search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
+        )
+        assert result.parents[0].token_set_ratio >= 90.0  # token kumesi hala ortusuyor
         assert result.parents[0].exact_match is False
 
 

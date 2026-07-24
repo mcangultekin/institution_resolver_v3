@@ -178,6 +178,22 @@ def _merge_filtered_first(
     return ordered[:size]
 
 
+def _contains_exact(query_tokens: list[str], candidate_norm: str) -> bool:
+    """`candidate_norm` (name/alias, normalize edilmis) sorgu tokenlerinde
+    ARDIŞIK bir alt-dizi olarak geciyor mu - kelime siniri gozetir (naif
+    Python `in` ile duz karakter-alt-dizgesi KONTROL EDILMEZ; "ana" gibi kisa
+    bir ad, "anadolu" gibi baska bir kelimenin ICINDE yanlislikla eslesmesin -
+    bkz. decompose.py'deki ayni tuzak). Tam sorgu==ad esitligi DEGIL, ICERME -
+    birlesik "kurum+birim" sorgularda kurum adi genelde sorgunun SADECE bir
+    parcasidir (2026-07-24, kullanici bulgusu: ilk surum tam-esitlik istiyordu,
+    bu yuzden birlesik sorgularda hicbir zaman ates almiyordu)."""
+    cand_tokens = candidate_norm.split()
+    if not cand_tokens:
+        return False
+    n = len(cand_tokens)
+    return any(query_tokens[i : i + n] == cand_tokens for i in range(len(query_tokens) - n + 1))
+
+
 def _attach_signals(
     hits: list[dict[str, Any]],
     *,
@@ -187,6 +203,7 @@ def _attach_signals(
     query_text: str,
 ) -> list[ScoredCandidate]:
     query_norm = normalize(query_text).base_no_accent
+    query_tokens = query_norm.split()
     query_quals = extract_qualifiers(query_text)
     out: list[ScoredCandidate] = []
     for h in hits:
@@ -196,10 +213,21 @@ def _attach_signals(
         bm25_norm = (bm25_raw / max_bm25) if bm25_raw is not None else 0.0
         knn_raw = knn_by_id.get(h["id"])
         cosine = (2.0 * knn_raw - 1.0) if knn_raw is not None else None
-        tsr = fuzz.token_set_ratio(query_norm, name_norm)
         conflict = qualifiers_conflict(query_quals, extract_qualifiers(name))
         alias_norms = {normalize(a).base_no_accent for a in (h.get("aliases") or [])}
-        exact = query_norm == name_norm or query_norm in alias_norms
+        # tsr = name + HER alias'a karsi ayri ayri hesaplanip EN IYISI alinir -
+        # SADECE `name`e bakmak yabanci-dil kacagi yaratiyordu (canli bulundu,
+        # 2026-07-24): "Ege Üniversitesi" (TR ad) icin İngilizce sorguda tsr
+        # cok dusuk kaliyordu, oysa katalogda "EGE UNIVERSITY" alias'i VARDI -
+        # hakem bu yuzden dusuk-tsr'li dogru adayi (Ege) gecip yanlis ama
+        # yuksek-tsr'li bir adaya (Fatih University...) auto_match verdi.
+        tsr = max(
+            [fuzz.token_set_ratio(query_norm, name_norm)]
+            + [fuzz.token_set_ratio(query_norm, a) for a in alias_norms]
+        )
+        exact = _contains_exact(query_tokens, name_norm) or any(
+            _contains_exact(query_tokens, a) for a in alias_norms
+        )
         out.append(
             ScoredCandidate(
                 id=h["id"],
@@ -282,6 +310,7 @@ def _parent_union(
     # sinyallerle enjekte edilir (bm25_norm=0.0: listeye girmedi; cosine=None:
     # olculmedi).
     query_norm = normalize(query).base_no_accent
+    query_tokens = query_norm.split()
     query_quals = extract_qualifiers(query)
     for hyp in decomposed.hypotheses or []:
         pid = hyp.matched_parent_id
@@ -302,7 +331,7 @@ def _parent_union(
                 cosine=cos_map.get(pid),
                 token_set_ratio=fuzz.token_set_ratio(query_norm, normalize(name).base_no_accent),
                 qualifier_conflict=qualifiers_conflict(query_quals, extract_qualifiers(name)),
-                exact_match=query_norm == normalize(name).base_no_accent,
+                exact_match=_contains_exact(query_tokens, normalize(name).base_no_accent),
             )
         )
     return union
