@@ -102,6 +102,8 @@ from rapidfuzz import fuzz
 from institution_resolver_v3.normalize.query_pipeline import expand_query_text, normalize
 
 SearchFn = Callable[[str, str], list[dict[str, Any]]]
+# (metinler, record_type) -> her metin icin hit listesi (giris sirasiyla hizali)
+SearchManyFn = Callable[[list[str], str], list[list[dict[str, Any]]]]
 
 
 def _name_variants(hit: dict[str, Any]) -> list[str]:
@@ -183,10 +185,22 @@ def _default_search_fn(text: str, record_type: str) -> list[dict[str, Any]]:
     return search(text, record_type, size=10)
 
 
+def _default_search_many_fn(texts: list[str], record_type: str) -> list[list[dict[str, Any]]]:
+    from institution_resolver_v3.elastic.search import search_many
+
+    return search_many(texts, record_type, size=10)
+
+
 def decompose(
     query: str,
     *,
     search_fn: SearchFn = _default_search_fn,
+    # Coklu-metin arama: tum span'ler TEK msearch round-trip'inde (O(n^2) span,
+    # eskiden n(n+1)/2 sirali HTTP -> tek istek). Sonuc span-basina search_fn'e
+    # BYTE-DENK; sadece varsayilan (gercek ES) yolda devrede. `search_fn` OZEL
+    # enjekte edildiyse (testler) None birakilir -> span-basina o fn cagrilir,
+    # eski davranis birebir korunur.
+    search_many_fn: SearchManyFn | None = None,
     # 5 -> 10 (2026-07-23): kisa fuzzy-junk adlar ("Jastec"), alan-uzunlugu normu
     # yuzunden dogru kaydin exact-alias eslesmesini ("JAMSTEC" @ rank 7,
     # "University of Münster" @ rank 6) top-5 disina itebiliyor - canli olculdu.
@@ -195,9 +209,9 @@ def decompose(
 ) -> DecomposedQuery:
     """Sorguyu kurum/birim kismina ayirir (bkz. modul docstring'i - yontem).
 
-    `search_fn(text, record_type)` her aday kesim noktasi icin cagirilir
-    (`record_type="parent"`); testlerde gercek ES yerine sahte bir fonksiyon
-    enjekte edilebilir.
+    Aday kesim noktalari (span'ler) icin parent araması yapilir. Uretimde tum
+    span'ler tek `msearch`'te toplanir (`search_many_fn`); testlerde `search_fn`
+    enjekte edilirse span-basina o cagrilir (eski sozlesme).
     """
     surface_tokens = expand_query_text(query).split()
     if not surface_tokens:
@@ -209,39 +223,50 @@ def decompose(
     norm_tokens = [normalize(tok).base_no_accent for tok in surface_tokens]
     n = len(surface_tokens)
 
+    # Batch arama: OZEL search_fn enjekte edilmediyse varsayilan msearch; aksi
+    # halde (testler / cagiran kendi fn'ini verdi) span-basina o fn'e dus.
+    if search_many_fn is None:
+        if search_fn is _default_search_fn:
+            search_many_fn = _default_search_many_fn
+        else:
+            search_many_fn = lambda texts, rt: [search_fn(t, rt) for t in texts]  # noqa: E731
+
+    # Span'ler ESKI ile AYNI sirada (start dis, end ic) - `order` sayaci ve
+    # esitlik-bozma bu sirayla ozdes kalsin.
+    spans = [(start, end) for start in range(n) for end in range(start + 1, n + 1)]
+    span_results = search_many_fn([" ".join(surface_tokens[s:e]) for s, e in spans], "parent")
+
     # Parent basina EN IYI (skor, esitlikte uzun aralik, esitlikte ilk gorulen)
     # aday aralik tutulur - tek global kazanan yerine hipotez havuzu.
     # deger: (score, length, order, start, end, name)
     best_by_parent: dict[str, tuple[float, int, int, int, int, str | None]] = {}
     order = 0
 
-    for start in range(n):
-        for end in range(start + 1, n + 1):
-            length = end - start
-            candidate_surface = " ".join(surface_tokens[start:end])
-            candidate_norm = " ".join(norm_tokens[start:end])
-            hits = search_fn(candidate_surface, "parent")[:top_k]
-            for hit in hits:
-                pid = hit.get("id")
-                if pid is None:
-                    continue
-                # Skor = name + HER alias'a karsi ayri ayri fuzz.ratio'nun en iyisi.
-                # Kanitli kacak sinifi (30-sorgu duman testi, 2026-07-23): sorgu
-                # Ingilizce ad/akronimle gelir ("JAMSTEC", "Westfälische
-                # Wilhelms-Universität"), kayit farkli kanonik adla durur - ES
-                # aliases_text'ten bulur ama name-ratio dusuk kalinca hipotez
-                # dogamiyordu. Alias'lar TEK TEK karsilastirilir (uzunluk-duyarli
-                # ratio korunur); birlesik metne partial_ratio KULLANILMAZ
-                # (jenerik pencere tuzagi - bkz. mappings.py "aliases" notu).
-                score = max(
-                    fuzz.ratio(candidate_norm, normalize(v).base_no_accent)
-                    for v in _name_variants(hit)
-                )
-                cur = best_by_parent.get(pid)
-                # esitlikte DAHA UZUN araligi tercih et (bilesik ad durumu)
-                if cur is None or score > cur[0] or (score == cur[0] and length > cur[1]):
-                    best_by_parent[pid] = (score, length, order, start, end, hit.get("name"))
-                    order += 1
+    for (start, end), hits_all in zip(spans, span_results):
+        length = end - start
+        candidate_norm = " ".join(norm_tokens[start:end])
+        hits = hits_all[:top_k]
+        for hit in hits:
+            pid = hit.get("id")
+            if pid is None:
+                continue
+            # Skor = name + HER alias'a karsi ayri ayri fuzz.ratio'nun en iyisi.
+            # Kanitli kacak sinifi (30-sorgu duman testi, 2026-07-23): sorgu
+            # Ingilizce ad/akronimle gelir ("JAMSTEC", "Westfälische
+            # Wilhelms-Universität"), kayit farkli kanonik adla durur - ES
+            # aliases_text'ten bulur ama name-ratio dusuk kalinca hipotez
+            # dogamiyordu. Alias'lar TEK TEK karsilastirilir (uzunluk-duyarli
+            # ratio korunur); birlesik metne partial_ratio KULLANILMAZ
+            # (jenerik pencere tuzagi - bkz. mappings.py "aliases" notu).
+            score = max(
+                fuzz.ratio(candidate_norm, normalize(v).base_no_accent)
+                for v in _name_variants(hit)
+            )
+            cur = best_by_parent.get(pid)
+            # esitlikte DAHA UZUN araligi tercih et (bilesik ad durumu)
+            if cur is None or score > cur[0] or (score == cur[0] and length > cur[1]):
+                best_by_parent[pid] = (score, length, order, start, end, hit.get("name"))
+                order += 1
 
     if not best_by_parent:
         return DecomposedQuery(

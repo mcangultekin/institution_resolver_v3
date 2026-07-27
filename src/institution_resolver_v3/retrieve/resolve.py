@@ -401,7 +401,16 @@ def resolve(
     filtresizle birlestir (recall-guvenli), her adaya sinyal ekle (kosinus
     dahil - kNN listesine girmeyenler icin cosine_fn ile hesaplanir)."""
     dsf = decompose_search_fn or (lambda text, rt: search_fn(text, rt, size=10))
-    decomposed = decompose(query, search_fn=dsf)
+    # decompose'un O(n^2) span aramasini tek msearch'e topla - AMA yalnizca
+    # standart ES yolunda (ozel search_fn/decompose_search_fn enjekte edilmediyse;
+    # aksi halde o fn span-basina cagrilarak eski davranis korunur).
+    if decompose_search_fn is None and search_fn is _default_search:
+        from institution_resolver_v3.elastic.search import search_many
+
+        dsm = lambda texts, rt: search_many(texts, rt, size=10)  # noqa: E731
+    else:
+        dsm = lambda texts, rt: [dsf(t, rt) for t in texts]  # noqa: E731
+    decomposed = decompose(query, search_fn=dsf, search_many_fn=dsm)
 
     parents = _parent_union(
         decomposed, query, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn,

@@ -74,6 +74,48 @@ def search(
     return [{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
 
 
+def search_many(
+    texts: list[str],
+    record_type: str,
+    *,
+    extra_filters: list[dict[str, Any]] | None = None,
+    client: Elasticsearch | None = None,
+    index: str | None = None,
+    size: int = 50,
+) -> list[list[dict[str, Any]]]:
+    """`search()`in COKLU-metin hali: tum sorgular TEK `msearch` round-trip'inde.
+
+    Sonuc, `[search(t, ...) for t in texts]` ile BYTE-DENK'tir (ayni analyzer,
+    ayni bool sorgu, ayni determinist sort) - fark yalnizca N sirali HTTP yerine
+    1 istek olmasi (decompose'un O(n^2) span aramasi icin). Bir alt-sorgu ES
+    tarafinda hata verirse (eskiden `search()` exception firlatirdi) o span BOS
+    liste olur - decompose'da "o kesimden aday yok" demektir, digerleri etkilenmez.
+    """
+    if not texts:
+        return []
+    client = client or get_client()
+    index = index or es_config()["index"]
+    query = build_search_query  # yerel ad - loop'ta ad aramasi olmasin
+    body: list[dict[str, Any]] = []
+    for text in texts:
+        body.append({"index": index})
+        body.append(
+            {
+                "size": size,
+                "query": query(expand_query_text(text), record_type, extra_filters=extra_filters),
+                "sort": [{"_score": {"order": "desc"}}, {"id": {"order": "asc"}}],
+            }
+        )
+    resp = client.msearch(body=body)
+    out: list[list[dict[str, Any]]] = []
+    for r in resp["responses"]:
+        if r.get("error") or "hits" not in r:
+            out.append([])
+            continue
+        out.append([{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in r["hits"]["hits"]])
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Hibrit: BM25 + kNN, RRF ile havuzlanir (RRF SADECE havuzlama - v3 karari)
 # --------------------------------------------------------------------------- #
