@@ -32,13 +32,27 @@ import httpx
 DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT = 120.0
 
+# Ollama'nin istek-basi varsayilan baglam penceresi ~2048 token ve asan prompt
+# SESSIZCE bastan kirpiliyor (canli olcum 2026-07-24: 18-adayli gercek prompt
+# ~10.5k karakterken model sadece 2051 token gordu - sorgu + hipotezler +
+# listenin BASI, yani 1. siradaki dogru cevap dahil, modele HIC ULASMADI;
+# "Ege" ornegindeki iki hakem hatasinin da kok nedeni bu). 8-adayli kirpilmis
+# prompt bile ~2.8k token tuttugu icin num_ctx ACIKCA gonderilmeli.
+DEFAULT_NUM_CTX = 8192
+
 
 class LlmError(RuntimeError):
     """Ollama cagrisi basarisiz oldu (baglanti, zaman asimi, HTTP hatasi)."""
 
 
 class LlmClient(Protocol):
-    def generate(self, prompt: str, *, temperature: float = 0.0) -> str: ...
+    def generate(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.0,
+        format_schema: dict | None = None,
+    ) -> str: ...
 
 
 @dataclass
@@ -54,6 +68,7 @@ class OllamaClient:
     model: str
     host: str = DEFAULT_HOST
     timeout: float = DEFAULT_TIMEOUT
+    num_ctx: int = DEFAULT_NUM_CTX
     _client: httpx.Client | None = field(default=None, repr=False, compare=False)
 
     def _http(self) -> httpx.Client:
@@ -72,10 +87,21 @@ class OllamaClient:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def generate(self, prompt: str, *, temperature: float = 0.0) -> str:
-        """Tek-atis (stream=False) cagri; `format: json` ile Ollama'nin kendisi
-        gecerli JSON uretmeye zorlanir (semaya UYUM degil - o judge.py'de
-        pydantic ile dogrulanir, bkz. modul docstring'i)."""
+    def generate(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.0,
+        format_schema: dict | None = None,
+    ) -> str:
+        """Tek-atis (stream=False) cagri.
+
+        `format_schema` verilirse Ollama'nin kisitli-uretim (structured output)
+        ozelligi kullanilir: cikti, verilen JSON semasina UYMAK ZORUNDA kalir -
+        enum'lu alanlarda model listede olmayan bir deger FIZIKSEL OLARAK
+        uretemez (canli dogrulandi 2026-07-24: prompt'ta "Z9 sec" denmesine
+        ragmen enum {A1,B2} disina cikamadi). Verilmezse eski davranis:
+        `format: "json"` sadece "gecerli JSON olsun" der, icerigi kisitlamaz."""
         try:
             resp = self._http().post(
                 f"{self.host}/api/generate",
@@ -83,11 +109,22 @@ class OllamaClient:
                     "model": self.model,
                     "prompt": prompt,
                     "stream": False,
-                    "format": "json",
-                    "options": {"temperature": temperature},
+                    "format": format_schema if format_schema is not None else "json",
+                    "options": {"temperature": temperature, "num_ctx": self.num_ctx},
                 },
             )
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise LlmError(f"Ollama cagrisi basarisiz ({self.model}): {exc}") from exc
-        return resp.json()["response"]
+        data = resp.json()
+        # Kirpilma korumasi: Ollama pencereyi asan prompt'u HATASIZ keser; modelin
+        # gordugu token sayisi pencereye dayandiysa prompt'un basi buyuk ihtimalle
+        # atilmistir - yarim prompt'la alinan karar guvenilmez, sessiz gecilmez.
+        seen = data.get("prompt_eval_count")
+        if seen is not None and seen >= self.num_ctx:
+            raise LlmError(
+                f"Prompt, baglam penceresine sigmadi ve Ollama tarafindan sessizce "
+                f"kirpildi (model {seen} token gordu, num_ctx={self.num_ctx}) - "
+                f"aday listesini kucultun ya da num_ctx'i buyutun."
+            )
+        return data["response"]

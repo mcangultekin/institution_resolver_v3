@@ -35,11 +35,16 @@ judge:
   enabled: false                 # F4 gelistirme asamasinda; batch entegrasyonu (F5) oncesi ac
   backend: "ollama"              # Claude/Anthropic bu katmanda KULLANILMIYOR (maliyet karari, 2026-07-24)
   host: "http://localhost:11434"
-  # E2B secildi (2026-07-24, 50-sorgu E2B/E4B karsilastirmasi sonrasi - E4B daha
-  # yavas + sema-uyumu daha dusuktu, bkz. docs/DENEY_2026-07-24_gemma_e2b_e4b_karsilastirma.md).
+  # E4B secildi (2026-07-27, sema-kisitli cikti sonrasi tekrar karsilastirma).
+  # ONCEKI karar E2B'ydi cunku E4B daha yavas + FORMAT hatasi cok veriyordu; ama
+  # sema-kisitli uretim (bkz. judge.py build_format_schema) o format hatalarini
+  # FIZIKSEL olarak kaldirdi ve iki ayri 25/50-sorgu kosusunda E4B'nin
+  # kalibrasyonu belirgin daha iyi cikti: supheli sorgularda review/no_match
+  # veriyor, E2B ise korlemesine auto_match veriyordu (canlida en pahali hata).
+  # Bedeli ~%20-50 hiz; kabul edildi (bkz. docs/DENEY_2026-07-24... + bu oturum).
   # Ollama'nin kendi kutuphanesindeki curated tag kullanilir - hf.co/ dogrudan-import
   # denendi, "gemma4" mimarisi icin 400 hatasi verdi (Ollama 0.32.3, canli dogrulandi).
-  model: "gemma4:e2b"
+  model: "gemma4:e4b"
   cache_dir: "llm_cache"
   auto_confidence: 0.90          # DANISMAN; auto_match tek basina buna dayanmaz (Ayrim 3)
 

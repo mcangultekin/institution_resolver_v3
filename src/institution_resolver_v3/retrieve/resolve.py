@@ -97,11 +97,23 @@ class ScoredCandidate:
     token_set_ratio: float = 0.0
     qualifier_conflict: bool = False
     passed_parent_filter: bool | None = None  # sadece subunit icin anlamli
-    # Sorgu (normalize hali) adayin ADI ya da ALIAS'LARINDAN BIRIYLE BIREBIR
-    # ayniysa True (token_set_ratio=100 ile KARISTIRILMASIN - tsr fazladan
-    # kelimeye toleransli, bu alan TAM dizge esitligi ister). 2026-07-24,
-    # kullanici talebi - "P" bayragiyla ayni mantik: guclu, ayri bir kanit.
+    # Adayin ADI ya da ALIAS'LARINDAN BIRI, sorgunun ICINDE ardisik parca
+    # olarak geciyorsa True (bkz. _contains_exact - ICERME, tam esitlik degil;
+    # token_set_ratio=100 ile KARISTIRILMASIN). 2026-07-24, kullanici talebi -
+    # "P" bayragiyla ayni mantik: guclu, ayri bir kanit.
     exact_match: bool = False
+    # Sorguya (tsr ile) EN YAKIN alias - adin kendisinden farkliysa dolu. Hakem
+    # Turkce katalog adi + Ingilizce sorgu arasinda koprulemeyi bununla yapar
+    # (2026-07-24 Gazi/Cardiology bulgusu: "KARDİYOLOJİ ANABİLİM DALI"nin
+    # "DIVISION OF CARDIOLOGY" alias'i prompt'ta gorunmeyince model "cardiology"yi
+    # kelime cagrisimiyla "KALP VE DAMAR CERRAHİSİ"ne bagladi).
+    best_alias: str | None = None
+    # exact_match=True ise HANGI normalize ad/alias'in eslestigi - hakem bunun
+    # sayesinde eslesmenin sorgunun HANGI parcasini kapsadigini gorur (2026-07-24
+    # Ege/Geriatri bulgusu: "Dahili Tip Bilimleri Bolumu"nun alias'i sorgunun
+    # sadece orta segmentini karsiliyordu ama hakem bayragi "sorgunun tamaminin
+    # karsiligi" sanip daha spesifik dogru adayi (Geriatri) gecti).
+    exact_match_text: str | None = None
 
 
 @dataclass
@@ -214,7 +226,16 @@ def _attach_signals(
         knn_raw = knn_by_id.get(h["id"])
         cosine = (2.0 * knn_raw - 1.0) if knn_raw is not None else None
         conflict = qualifiers_conflict(query_quals, extract_qualifiers(name))
-        alias_norms = {normalize(a).base_no_accent for a in (h.get("aliases") or [])}
+        aliases_raw = h.get("aliases") or []
+        alias_norms = {normalize(a).base_no_accent for a in aliases_raw}
+        best_alias, best_alias_tsr = None, -1.0
+        for a in aliases_raw:
+            a_norm = normalize(a).base_no_accent
+            if a_norm == name_norm:
+                continue
+            t = fuzz.token_set_ratio(query_norm, a_norm)
+            if t > best_alias_tsr:
+                best_alias_tsr, best_alias = t, a
         # tsr = name + HER alias'a karsi ayri ayri hesaplanip EN IYISI alinir -
         # SADECE `name`e bakmak yabanci-dil kacagi yaratiyordu (canli bulundu,
         # 2026-07-24): "Ege Üniversitesi" (TR ad) icin İngilizce sorguda tsr
@@ -225,9 +246,15 @@ def _attach_signals(
             [fuzz.token_set_ratio(query_norm, name_norm)]
             + [fuzz.token_set_ratio(query_norm, a) for a in alias_norms]
         )
-        exact = _contains_exact(query_tokens, name_norm) or any(
-            _contains_exact(query_tokens, a) for a in alias_norms
-        )
+        exact_text = None
+        if _contains_exact(query_tokens, name_norm):
+            exact_text = name_norm
+        else:
+            for a in alias_norms:
+                if _contains_exact(query_tokens, a):
+                    exact_text = a
+                    break
+        exact = exact_text is not None
         out.append(
             ScoredCandidate(
                 id=h["id"],
@@ -240,6 +267,8 @@ def _attach_signals(
                 qualifier_conflict=conflict,
                 passed_parent_filter=h.get("passed_parent_filter"),
                 exact_match=exact,
+                exact_match_text=exact_text,
+                best_alias=best_alias,
             )
         )
     return out
@@ -321,6 +350,8 @@ def _parent_union(
         # enjekte adayin kosinusu da hesaplanir (raw'da embedding yok -> mget yolu);
         # hesaplanamazsa None kalir ("vektor yok/alinamadi").
         cos_map = cosine_fn(hyp.institution_part, [{"id": pid, "record_type": "parent"}])
+        inj_name_norm = normalize(name).base_no_accent
+        inj_exact = _contains_exact(query_tokens, inj_name_norm)
         union.append(
             ScoredCandidate(
                 id=pid,
@@ -329,9 +360,10 @@ def _parent_union(
                 raw={"id": pid, "record_type": "parent", "name": name, "from_hypothesis_only": True},
                 bm25_norm=0.0,
                 cosine=cos_map.get(pid),
-                token_set_ratio=fuzz.token_set_ratio(query_norm, normalize(name).base_no_accent),
+                token_set_ratio=fuzz.token_set_ratio(query_norm, inj_name_norm),
                 qualifier_conflict=qualifiers_conflict(query_quals, extract_qualifiers(name)),
-                exact_match=_contains_exact(query_tokens, normalize(name).base_no_accent),
+                exact_match=inj_exact,
+                exact_match_text=(inj_name_norm if inj_exact else None),
             )
         )
     return union

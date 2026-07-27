@@ -65,8 +65,15 @@ class _FakeClient:
         self.response = response
         self.last_prompt: str | None = None
 
-    def generate(self, prompt: str, *, temperature: float = 0.0) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.0,
+        format_schema: dict | None = None,
+    ) -> str:
         self.last_prompt = prompt
+        self.last_format_schema = format_schema
         return self.response
 
 
@@ -85,12 +92,15 @@ class TestPrompt:
         prompt = build_prompt(result.query, result.decomposed, parents, subunits)
         assert "anesztezi klinika" not in prompt.lower().replace(result.query.lower(), "")
 
-    def test_cosine_warning_present(self):
+    def test_cosine_not_shown_to_judge(self):
+        # 2026-07-27: ham kosinüs hakeme GÖSTERİLMEZ. Ölçüldü ki e5-base
+        # anizotropik - mutlak/göreli kosinüs yanıltıcı ranking sinyaliydi
+        # (doğru eşleşme havuz-içi ort. 4. sırada). kNN retrieval'da KALIR;
+        # bu yalnızca hakemin PROMPT görünümüyle ilgili (bkz. prompt.py docstring).
         result = _result()
         parents, subunits = build_candidate_views(result)
         prompt = build_prompt(result.query, result.decomposed, parents, subunits)
-        low = prompt.lower()
-        assert "mutlak" in low and "eşik" in low
+        assert "kosinüs" not in prompt.lower()
 
     def test_separate_decision_rule_present(self):
         result = _result()
@@ -207,7 +217,6 @@ class TestCandidateTrimming:
 class TestJudgeHappyPath:
     def test_parent_matched_subunit_none_when_not_requested(self):
         payload = {
-            "query": "pécsi tudományegyetem anesztezi klinika",
             "parent": {"verdict": "auto_match", "matched_id": "58062"},
             "subunit": None,
         }
@@ -221,7 +230,6 @@ class TestJudgeHappyPath:
         # Pecs senaryosu: kurum dogru, birim korpusta yok - sorgunun TAMAMI
         # no_match SAYILMAZ, sadece subunit du?er (bkz. docs/DURUM.md).
         payload = {
-            "query": "q",
             "parent": {"verdict": "auto_match", "matched_id": "58062"},
             "subunit": {"verdict": "no_match", "matched_id": None},
         }
@@ -240,14 +248,13 @@ class TestJudgeValidation:
 
     def test_schema_violation_raises(self):
         # auto_match verdict'inde matched_id eksik -> pydantic validator hata versin.
-        payload = {"query": "q", "parent": {"verdict": "auto_match", "matched_id": None}}
+        payload = {"parent": {"verdict": "auto_match", "matched_id": None}}
         client = _FakeClient(json.dumps(payload))
         with pytest.raises(JudgeValidationError):
             judge(_result(), client)
 
     def test_hallucinated_parent_id_raises(self):
         payload = {
-            "query": "q",
             "parent": {"verdict": "auto_match", "matched_id": "UYDURMA_ID"},
             "subunit": None,
         }
@@ -257,7 +264,6 @@ class TestJudgeValidation:
 
     def test_hallucinated_subunit_id_raises(self):
         payload = {
-            "query": "q",
             "parent": {"verdict": "auto_match", "matched_id": "58062"},
             "subunit": {"verdict": "auto_match", "matched_id": "HAYALET_ID"},
         }
@@ -274,7 +280,6 @@ class TestMatchedIdNormalization:
 
     def test_int_matched_id_coerced_to_str(self):
         payload = {
-            "query": "q",
             "parent": {"verdict": "auto_match", "matched_id": 58062},
             "subunit": None,
         }
@@ -284,7 +289,6 @@ class TestMatchedIdNormalization:
 
     def test_literal_null_string_normalized_to_none(self):
         payload = {
-            "query": "q",
             "parent": {"verdict": "auto_match", "matched_id": "58062"},
             "subunit": {"verdict": "no_match", "matched_id": "null"},
         }

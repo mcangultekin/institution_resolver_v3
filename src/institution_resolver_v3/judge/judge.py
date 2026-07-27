@@ -15,6 +15,7 @@ JudgeResult'i oldugu gibi doner.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 from pydantic import ValidationError
@@ -24,6 +25,66 @@ from institution_resolver_v3.judge.client import LlmClient
 from institution_resolver_v3.judge.prompt import build_prompt
 from institution_resolver_v3.judge.schema import JudgeResult
 from institution_resolver_v3.retrieve.resolve import ResolveResult
+
+
+_VERDICTS = ["auto_match", "review", "ambiguous", "no_match"]
+
+
+def _decision_schema(choices: list[str]) -> dict:
+    """Tek bir karar blogu (parent ya da subunit) icin kisitli JSON semasi.
+
+    `matched_id` SADECE bu bloga ait "etiket|ad" degerlerinden biri ya da null
+    olabilir - boylece (1) iki listeyi karistirip birinden id cekme (canli bulgu
+    2026-07-24: parent alanina subunit listesindeki 105863 yazildi) ve (2) niyet
+    edilen adayla yazilan id'nin ayrismasi (Gazi/Cardiology: model dogru adayi
+    gorurken komsu kaydin id'sini yazdi - id soyut bir sembol, kucuk model onu
+    isimle BAGLAMIYOR) uretim asamasinda engellenir: deger, adayin ADINI da
+    icerdigi icin secim ismin semantigine kilitlenir. `_validate_ids` yine de
+    kalir (kusak + pantolon askisi - sema destegi olmayan bir client enjekte
+    edilirse tek koruma o)."""
+    matched: dict = (
+        {"anyOf": [{"enum": choices}, {"type": "null"}]} if choices else {"type": "null"}
+    )
+    return {
+        "type": "object",
+        "properties": {"verdict": {"enum": _VERDICTS}, "matched_id": matched},
+        "required": ["verdict", "matched_id"],
+    }
+
+
+def _choice(v: CandidateView) -> str:
+    """Sema enum degeri: "etiket|ad (diger_ad)" (bkz. _decision_schema docstring'i).
+
+    diger_ad (best_alias, cogunlukla Ingilizce) da eklenir: sorgu Ingilizce,
+    katalog adi Turkce oldugunda secim-degeri sorgudaki ifadeyle ayni dilde bir
+    parca tasisin diye (2026-07-24 Ege bulgusu: model unit_phrase'e "Division of
+    Geriatrics" yazip secimde yine de Turkce-adli yanlis adaya gitti - koprunun
+    kendisi enum degerinin ICINDE olmali)."""
+    return f"{v.id}|{v.name} ({v.best_alias})" if v.best_alias else f"{v.id}|{v.name}"
+
+
+def build_format_schema(
+    parents: list[CandidateView], subunits: list[CandidateView]
+) -> dict:
+    """Ollama kisitli-uretim semasi: JudgeResult'in aynasi + aday enum'lari."""
+    return {
+        "type": "object",
+        "properties": {
+            "parent": _decision_schema([_choice(c) for c in parents]),
+            # subunit'ten ONCE gelir (llama.cpp grammar'i property sirasini
+            # korur): model once sorgudaki en spesifik birim ifadesini yazmaya
+            # zorlanir, subunit secimini ondan SONRA yapar (dikkat cipasi,
+            # bkz. schema.py unit_phrase notu).
+            "unit_phrase": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "subunit": {
+                "anyOf": [
+                    _decision_schema([_choice(c) for c in subunits]),
+                    {"type": "null"},
+                ]
+            },
+        },
+        "required": ["parent", "unit_phrase", "subunit"],
+    }
 
 
 class JudgeValidationError(RuntimeError):
@@ -74,11 +135,30 @@ def _validate_ids(
         )
 
 
+def _label_views(
+    views: list[CandidateView], prefix: str
+) -> tuple[list[CandidateView], dict[str, str]]:
+    """Gercek katalog id'lerini kisa sentetik etiketlerle (P1.., S1..) degistirir.
+
+    Neden (2026-07-24, Gazi/Cardiology canli bulgusu): kucuk model (E2B) uzun ve
+    birbirine benzeyen rakamsal id'leri KARISTIRIYOR - dogru adayi ("152078",
+    listenin 1.si, alias'i sorguyla birebir ortusuyor) niyetleyip komsu kaydin
+    id'sini ("152062") yazdi; onceki "105863" parent hatasi da ayni kalip. Kisa
+    etiket + sema-enum birlikte bu hata sinifini uretim asamasinda kapatir;
+    cevap `_unlabel` ile gercek id'ye cevrilir, disari etiket SIZMAZ."""
+    labeled = [dataclasses.replace(v, id=f"{prefix}{i + 1}") for i, v in enumerate(views)]
+    return labeled, {f"{prefix}{i + 1}": v.id for i, v in enumerate(views)}
+
+
 def judge(resolve_result: ResolveResult, client: LlmClient) -> JudgeResult:
     """resolve() ciktisini hakeme sorar, dogrulanmis `JudgeResult` doner."""
     parents, subunits = build_candidate_views(resolve_result)
-    prompt = build_prompt(resolve_result.query, resolve_result.decomposed, parents, subunits)
-    raw = client.generate(prompt)
+    parents_lbl, p_map = _label_views(parents, "P")
+    subunits_lbl, s_map = _label_views(subunits, "S")
+    prompt = build_prompt(
+        resolve_result.query, resolve_result.decomposed, parents_lbl, subunits_lbl
+    )
+    raw = client.generate(prompt, format_schema=build_format_schema(parents_lbl, subunits_lbl))
 
     try:
         payload = json.loads(raw)
@@ -94,6 +174,19 @@ def judge(resolve_result: ResolveResult, client: LlmClient) -> JudgeResult:
         raise JudgeValidationError(
             f"Hakemin cevabı çelişkili/eksik: {_format_validation_error(exc)}"
         ) from exc
+
+    # "etiket|ad" -> gercek id cevirisi (bkz. _label_views/_choice). Haritada
+    # olmayan bir deger oldugu gibi birakilir - _validate_ids onu yakalar
+    # (sahte/test client'lari gercek id de dondurebilir, o yol da calismali).
+    def _to_real(value: str | None, mapping: dict[str, str]) -> str | None:
+        if value is None:
+            return None
+        label = value.split("|", 1)[0]
+        return mapping.get(label, value)
+
+    result.parent.matched_id = _to_real(result.parent.matched_id, p_map)
+    if result.subunit is not None:
+        result.subunit.matched_id = _to_real(result.subunit.matched_id, s_map)
 
     _validate_ids(result, parents, subunits)
     return result

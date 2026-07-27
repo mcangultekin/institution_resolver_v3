@@ -41,6 +41,8 @@ class CandidateView:
     qualifier_conflict: bool
     passed_parent_filter: bool | None
     exact_match: bool = False
+    exact_match_text: str | None = None
+    best_alias: str | None = None
     country: str | None = None
     city: str | None = None
     kind_label: str | None = None
@@ -57,6 +59,8 @@ def _parent_view(c: ScoredCandidate) -> CandidateView:
         qualifier_conflict=c.qualifier_conflict,
         passed_parent_filter=c.passed_parent_filter,
         exact_match=c.exact_match,
+        exact_match_text=c.exact_match_text,
+        best_alias=c.best_alias,
         country=c.raw.get("country"),
         city=c.raw.get("city"),
     )
@@ -74,6 +78,8 @@ def _subunit_view(c: ScoredCandidate, parent_context: dict[str, ScoredCandidate]
         qualifier_conflict=c.qualifier_conflict,
         passed_parent_filter=c.passed_parent_filter,
         exact_match=c.exact_match,
+        exact_match_text=c.exact_match_text,
+        best_alias=c.best_alias,
         country=(parent.raw.get("country") if parent else None),
         city=(parent.raw.get("city") if parent else None),
         kind_label=c.raw.get("kind_label_raw"),
@@ -86,20 +92,16 @@ def _trim(views: list[CandidateView], max_candidates: int) -> list[CandidateView
     adaylari sirasindan bagimsiz garanti tutar (bkz. modul docstring'i)."""
     if len(views) <= max_candidates:
         return views
-    kept: list[CandidateView] = []
-    seen_ids: set[str] = set()
+    keep_ids: set[str] = {v.id for v in views if v.exact_match}
     for v in views:
-        if v.exact_match:
-            kept.append(v)
-            seen_ids.add(v.id)
-    for v in views:
-        if len(kept) >= max_candidates:
+        if len(keep_ids) >= max(max_candidates, len(keep_ids)):
             break
-        if v.id in seen_ids:
-            continue
-        kept.append(v)
-        seen_ids.add(v.id)
-    return kept
+        keep_ids.add(v.id)
+    # ORIJINAL sira korunur (2026-07-24, Ege/Geriatri bulgusu): kucuk modelde
+    # pozisyon yanliligi guclu - exact'leri one tasimak, resolve()'un kendi
+    # (guclu-once) siralamasinda 1. olan dogru adayi geriye itip modeli exact'e
+    # cekiyordu. exact garanti-tutulur ama YERI degistirilmez.
+    return [v for v in views if v.id in keep_ids]
 
 
 # Hakeme giden aday sayisi ust siniri (parent + subunit ayri ayri) - `resolve()`nin

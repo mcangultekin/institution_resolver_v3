@@ -83,8 +83,17 @@ class SubunitDecision(_DecisionBase):
 class JudgeResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query: str
+    # `query` alani KALDIRILDI (2026-07-27, Asama 1 hiz paketi): modele koca
+    # sorguyu aynen geri yazdirmak uretimi 2-3 katina cikariyordu ve deger hicbir
+    # yerde KULLANILMIYORDU (cagiran taraf sorguyu zaten biliyor).
     parent: ParentDecision
+    # Mini ara-adim (2026-07-24, Ege/Geriatri bulgusu): subunit kararindan ONCE
+    # modelin sorgudaki EN SPESIFIK birim ifadesini aynen yazmasi istenir
+    # (~5-10 token) - tam `reasoning` alaninin geri gelisi DEGIL (o ~200 token
+    # ve hiz icin kaldirildi), sadece dikkat cipasi: cok-seviyeli sorgularda
+    # ust-seviye tam_eşleşme'li adaya kayma egilimini kirmak icin. Sorguda birim
+    # ifadesi yoksa null.
+    unit_phrase: str | None = None
     # None = sorguda birim ifadesi hic YOK (bkz. modul docstring'i) - "bulunamadi"
     # ile karistirilmasin, o durum SubunitDecision(verdict="no_match").
     subunit: SubunitDecision | None = None
