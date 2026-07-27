@@ -159,5 +159,62 @@ def judge_cmd(
     )
 
 
+@app.command("batch")
+def batch_cmd(
+    input_csv: str = typer.Argument(..., help="girdi CSV yolu"),
+    query_col: str = typer.Option("raw_name", "--query-col", help="sorgu metnini tasiyan kolon"),
+    out: str = typer.Option("batch_sonuc.csv", "--out", help="sonuc CSV yolu"),
+    limit: int = typer.Option(None, "--limit", help="en fazla bu kadar girdi isle"),
+    resume: bool = typer.Option(False, "--resume", help="cikti varsa kaldigi yerden devam"),
+    model: str = typer.Option(None, "--model", help="Ollama model tag (varsayilan: config judge.model)"),
+    top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+) -> None:
+    """F5 batch: bir CSV'deki kurum ifadelerini resolve+hakem'den gecirip sonuc
+    CSV'sine yazar (no_match/review/ambiguous ve hatalar dahil - bkz. eval/batch.py)."""
+    import csv as _csv
+
+    from institution_resolver_v3.config import load_config
+    from institution_resolver_v3.eval.batch import run_batch
+    from institution_resolver_v3.judge.client import OllamaClient
+
+    src = Path(input_csv)
+    if not src.exists():
+        typer.echo(f"Girdi CSV bulunamadi: {src}", err=True)
+        raise typer.Exit(code=1)
+
+    with src.open(newline="", encoding="utf-8") as f:
+        header = next(_csv.reader(f), [])
+    if query_col not in header:
+        typer.echo(f"'{query_col}' kolonu CSV'de yok. Mevcut kolonlar: {header}", err=True)
+        raise typer.Exit(code=1)
+
+    cfg = load_config()["judge"]
+    client = OllamaClient(model=model or cfg["model"], host=cfg["host"])
+
+    def _queries():
+        with src.open(newline="", encoding="utf-8") as fh:
+            for row in _csv.DictReader(fh):
+                q = (row.get(query_col) or "").strip()
+                if q:
+                    yield q
+
+    def _progress(i: int, query: str, rec: dict) -> None:
+        if rec["status"] == "error":
+            tail = f"HATA: {rec['error'][:60]}"
+        else:
+            sub = rec["subunit_verdict"] or "-"
+            tail = f"{rec['parent_verdict']}/{rec['parent_id'] or '-'} | subunit={sub}"
+        typer.echo(f"[{i}] {query[:50]!r:<54} -> {tail}", err=True)
+
+    typer.echo(f"Batch basliyor: {src}  (kolon='{query_col}', model={model or cfg['model']}) -> {out}", err=True)
+    summary = run_batch(
+        _queries(), client, out, limit=limit, resume=resume, top=top, on_progress=_progress
+    )
+    typer.echo(
+        f"\nBITTI: ok={summary['ok']}  hata={summary['error']}  atlandi={summary['skipped']}"
+        f"  -> {summary['out']}"
+    )
+
+
 if __name__ == "__main__":
     app()
