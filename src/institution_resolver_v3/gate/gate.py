@@ -167,13 +167,52 @@ def _decide_pool(
     return GateDecision("auto_match", best.id, conf, _signals_of(best, reason="tek_exact"))
 
 
+def _enforce_coherence(
+    parent: GateDecision, subunit: GateDecision, subunit_pool: list[ScoredCandidate]
+) -> GateDecision:
+    """Capraz-havuz tutarlilik: subunit, parent'tan daha EMIN olamaz.
+
+    subunit `auto_match` YALNIZCA parent da `auto_match` VE secilen subunit gercekten
+    o parent'in ALTINDAysa gecerli kalir. Aksi halde "kurumu kesin bilmiyorum ama
+    alt-birimden eminim" tutarsizligi olusur - Dalga 0'da (50-sorgu DENEY seti) CANLI
+    gozlemlendi: #29 parent=review (matched_id=None) iken sub=auto hicbir parent'a
+    bagli degildi; #1 parent=ambiguous iken sub=auto secilen ikizi asiri-iddia
+    ediyordu. Bu durumda verdict `review`e cekilir; matched_id ONERI olarak KORUNUR
+    (atilmaz - decide/ ya da hakem degerlendirsin), gerekce signals'a yazilir.
+
+    Diger subunit verdict'leri (review/ambiguous/no_match/none) zaten auto'dan zayif,
+    dokunulmaz. Not: bu YALNIZ kapama (down-cap); ters yon - guclu subunit'in belirsiz
+    parent'i NETLESTIRMESI (promosyon) - bilerek DISARIDA, o decide/ katmaninin isi."""
+    if subunit.verdict != "auto_match":
+        return subunit
+    under_parent = any(
+        c.id == subunit.matched_id and c.raw.get("parent_id") == parent.matched_id
+        for c in subunit_pool
+    )
+    if parent.verdict == "auto_match" and under_parent:
+        return subunit
+    return GateDecision(
+        verdict="review",
+        matched_id=subunit.matched_id,  # ONERI olarak korunur - atilmaz
+        confidence=subunit.confidence,
+        signals={
+            **subunit.signals,
+            "reason": "parent_kesin_degil",
+            "capped_from": "auto_match",
+            "parent_verdict": parent.verdict,
+        },
+    )
+
+
 def gate(result: ResolveResult, *, config: dict[str, Any] | None = None) -> GateResult:
     """resolve() sonucunu deterministik triyajdan gecirir (LLM YOK).
 
     Esik config.gate.garbage_lexical_floor'dan (placeholder - gold sonrasi kalibre).
     subunit: sorguda birim ifadesi (decompose.unit_part) YOKSA None; varsa havuz bos
     olsa bile no_match (istendi ama bulunamadi - hakemdeki ayrim). Subunit karari,
-    secilen parent'a baglanir (parent auto/review/ambiguous ise matched_id'sine).
+    secilen parent'a baglanir (parent auto/review/ambiguous ise matched_id'sine) ve
+    SON adimda tutarlilik kapisindan gecer (_enforce_coherence): subunit parent'tan
+    daha emin olamaz - parent auto degilse subunit auto -> review'e cekilir.
     """
     gc = (config or load_config()).get("gate", {})
     floor_tsr = float(gc.get("garbage_lexical_floor", 0.55))
@@ -189,5 +228,6 @@ def gate(result: ResolveResult, *, config: dict[str, Any] | None = None) -> Gate
             result.subunits, query_part=unit_phrase, floor_tsr=floor_tsr,
             prefer_parent_id=parent.matched_id,
         )
+        subunit = _enforce_coherence(parent, subunit, result.subunits)
 
     return GateResult(query=result.query, parent=parent, subunit=subunit, unit_phrase=unit_phrase)

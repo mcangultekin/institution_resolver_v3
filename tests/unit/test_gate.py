@@ -165,6 +165,8 @@ def test_subunit_requested_but_empty_no_match() -> None:
 
 def test_subunit_bound_to_chosen_parent() -> None:
     # Ayni adli iki subunit farkli parent'ta; parent=14 secilince 14 altindaki secilir.
+    # (Ayni zamanda tutarlilik kapisi REGRESYON testi: parent auto + sub 14 altinda
+    #  -> auto KORUNUR, _enforce_coherence bunu kapmamali.)
     parents = [_cand("14", "EGE UNIVERSITESI", tsr=100.0, exact_text="ege universitesi")]
     subs = [
         _cand("900", "GERIATRI BILIM DALI", tsr=100.0, exact_text="geriatri bilim dali",
@@ -174,5 +176,53 @@ def test_subunit_bound_to_chosen_parent() -> None:
     ]
     g = gate(_result(parents=parents, subunits=subs, unit_part="geriatri bilim dali"), config=_CFG)
     assert isinstance(g.subunit, GateDecision)
-    assert g.subunit.verdict == "auto_match"  # parent'a baglanip teklesti
+    assert g.subunit.verdict == "auto_match"  # parent'a baglanip teklesti (auto korundu)
     assert g.subunit.matched_id == "901"
+
+
+# --- P2: capraz-havuz tutarlilik (_enforce_coherence) ------------------------
+# Dalga 0 (50-sorgu DENEY seti) canli ihlaller: #29 parent=review/sub=auto,
+# #1 parent=ambiguous/sub=auto. Kural: subunit auto <=> parent auto + o parent altinda.
+
+
+def test_coherence_parent_review_caps_subunit_auto() -> None:
+    # #29 vakasi: parent exact yok ama tsr yuksek -> review (matched_id=None);
+    # subunit exact -> auto secilir ama HICBIR kesin parent'a bagli degil -> review'e cekilir.
+    parents = [_cand("1", "YOZGAT BOZOK UNIVERSITESI", tsr=97.0)]  # exact yok -> review
+    subs = [_cand("900", "GERIATRI BILIM DALI", tsr=100.0, exact_text="geriatri bilim dali",
+                  record_type="subunit", parent_id="1")]
+    g = gate(_result(parents=parents, subunits=subs, unit_part="geriatri bilim dali"), config=_CFG)
+    assert g.parent.verdict == "review"
+    assert g.subunit.verdict == "review"                       # auto -> review
+    assert g.subunit.matched_id == "900"                       # ONERI korunur
+    assert g.subunit.signals["capped_from"] == "auto_match"
+    assert g.subunit.signals["reason"] == "parent_kesin_degil"
+
+
+def test_coherence_parent_ambiguous_caps_subunit_auto() -> None:
+    # #1 vakasi: parent gercek ikiz (ambiguous) iken subunit auto asiri-iddia.
+    parents = [
+        _cand("1", "SULEYMAN DEMIREL UNIVERSITESI", tsr=100.0, exact_text="suleyman demirel universitesi"),
+        _cand("2", "SULEYMAN DEMIREL UNIVERSITY", tsr=100.0, exact_text="suleyman demirel university"),
+    ]
+    subs = [_cand("900", "TICARET HUKUKU ABD", tsr=100.0, exact_text="ticaret hukuku abd",
+                  record_type="subunit", parent_id="1")]
+    g = gate(_result(parents=parents, subunits=subs,
+                     institution_part="suleyman demirel universitesi",
+                     unit_part="ticaret hukuku abd"), config=_CFG)
+    assert g.parent.verdict == "ambiguous"
+    assert g.subunit.verdict == "review"
+    assert g.subunit.matched_id == "900"
+
+
+def test_coherence_subunit_auto_under_wrong_parent_capped() -> None:
+    # parent auto=14; ama tek subunit exact 101 ALTINDA (14 altinda yok) -> auto ama
+    # yanlis parent altinda -> review'e cekilir (parent auto olsa BILE).
+    parents = [_cand("14", "EGE UNIVERSITESI", tsr=100.0, exact_text="ege universitesi")]
+    subs = [_cand("900", "GERIATRI BILIM DALI", tsr=100.0, exact_text="geriatri bilim dali",
+                  record_type="subunit", parent_id="101")]
+    g = gate(_result(parents=parents, subunits=subs, unit_part="geriatri bilim dali"), config=_CFG)
+    assert g.parent.verdict == "auto_match" and g.parent.matched_id == "14"
+    assert g.subunit.verdict == "review"
+    assert g.subunit.matched_id == "900"
+    assert g.subunit.signals["parent_verdict"] == "auto_match"
