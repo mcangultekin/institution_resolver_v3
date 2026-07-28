@@ -23,6 +23,9 @@ data/inbox/
 data/eval/*_labeled.csv
 data/eval/*_sample.csv
 
+# API batch job girdi/ciktilari (kullanici verisi, bkz. api/routers/batch.py)
+data/jobs/
+
 # LLM cache + sirlar
 .env
 *.cache

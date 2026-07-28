@@ -1,5 +1,8 @@
-# Elasticsearch 8.x - tek node, gelistirme ortami
+# Elasticsearch 8.x (tek node) + Ollama (F4 hakem) + API (F6, bkz. ../Dockerfile).
 # Kullanim: cd docker && docker compose up -d
+# Ilk kurulum (bu compose sadece servisleri ayaga kaldirir, veri/model YUKLEMEZ):
+#   docker compose exec ollama ollama pull gemma4:e4b
+#   docker compose exec api inres3 setup-es && docker compose exec api inres3 index --embeddings
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
@@ -16,5 +19,37 @@ services:
       interval: 10s
       retries: 12
 
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # Prod Linux+nvidia'da GPU gecisi icin (Mac'te GPU'suz native Ollama
+    # kullanilir - bilinen kisit, bkz. docs/DURUM.md F4 notlari):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      - elasticsearch
+      - ollama
+    volumes:
+      - ../data/processed:/app/data/processed
+      - ../data/jobs:/app/data/jobs
+      - hf_cache:/root/.cache/huggingface  # embedding modeli (~1.1GB) container silinse de tekrar inmesin
+
 volumes:
   esdata:
+  ollama_data:
+  hf_cache:

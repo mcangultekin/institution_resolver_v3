@@ -1,0 +1,41 @@
+# Institution Resolver v3 - Docker Compose ayarlari.
+# default.yaml'in kopyasi; TEK fark host'lar (localhost yerine servis adi).
+# Kullanim: INRES3_CONFIG=/app/config/docker.yaml (bkz. config.py, docker-compose.yml).
+
+elasticsearch:
+  host: "http://elasticsearch:9200"
+  index: "institutions_v1"       # TEK index (parent + subunit, record_type alaniyla)
+  alias: "institutions"
+
+retrieval:
+  pool_size: 50                  # havuz (recall@50 F2'de olculur)
+  parent_top_k: 5                # LLM'e giden parent aday sayisi
+  subunit_top_k: 10               # kardesler yaristigi icin daha genis
+  rrf:
+    rank_constant: 60            # RRF yalniz havuzlama icin
+  boosts:                        # alan boost'lari (F2'de olculur, sabit degil)
+    unit_name: 3.0
+    unit_name.ascii: 2.0
+    aliases.normalized: 1.5
+    parent_name: 1.0
+
+embedding:
+  model: "intfloat/multilingual-e5-base"
+  dim: 768
+  batch_size: 128
+  query_prefix: "query: "
+  passage_prefix: "passage: "
+
+gate:
+  garbage_lexical_floor: 0.55
+
+judge:
+  enabled: false
+  backend: "ollama"              # Claude/Anthropic bu katmanda KULLANILMIYOR (maliyet karari, 2026-07-24)
+  host: "http://ollama:11434"
+  model: "gemma4:e4b"
+  cache_dir: "llm_cache"
+  auto_confidence: 0.90
+
+decision:
+  auto_precision_target: 0.98

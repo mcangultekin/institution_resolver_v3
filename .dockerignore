@@ -1,0 +1,10 @@
+.git
+data/
+docs/
+tests/
+*.egg-info
+__pycache__
+.pytest_cache
+*.pyc
+.DS_Store
+llm_cache/
