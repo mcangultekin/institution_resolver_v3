@@ -26,10 +26,13 @@ embedding:
   query_prefix: "query: "
   passage_prefix: "passage: "
 
-gate:                            # esikler F3/F4'ten SONRA, gercek sette ayarlanir
-  garbage_lexical_floor: 0.55    # bunun altinda -> no_match
-  clear_win_token_set: 0.95
-  clear_win_margin: 0.15
+gate:                            # Asama-1 triyaj esigi (placeholder - gold sonrasi kalibre)
+  # exact yoksa VE en iyi tsr bu orandan (0-1) dusukse -> no_match (cop kapisi).
+  # Karar omurgasi exact_match; bu esik yalniz "exact yok" dalinda kullanilir.
+  garbage_lexical_floor: 0.55
+  # NOT: marj-kapili tsr-auto (#6) denendi ve CIKARILDI (2026-07-28) - guvenligi
+  # decompose.institution_part'a bagliydi, o dagınık string'lerde bozuluyor
+  # (bkz. gate/gate.py docstring). Upstream (decompose + sehir gazetteer) isi.
 
 judge:
   enabled: false                 # F4 gelistirme asamasinda; batch entegrasyonu (F5) oncesi ac

@@ -108,6 +108,52 @@ def match_cmd(
         )
 
 
+@app.command("gate")
+def gate_cmd(
+    query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
+    top: int = typer.Option(5, "--top", help="her havuzdan kac aday (havuz buyuklugu)"),
+) -> None:
+    """Tek sorgu: resolve() + LLM'siz deterministik triyaj (gate). Tek cevap +
+    guven kovasi (auto_match/review/ambiguous/no_match). LLM KULLANILMAZ."""
+    import time
+
+    from institution_resolver_v3.gate.gate import gate as run_gate
+    from institution_resolver_v3.retrieve.resolve import resolve
+
+    t0 = time.time()
+    result = resolve(query, size=top)
+    verdict = run_gate(result)
+    dt = time.time() - t0
+
+    def _name_of(matched_id: str | None, pool) -> str:
+        if matched_id is None:
+            return ""
+        c = next((c for c in pool if c.id == matched_id), None)
+        return c.name if c else ""
+
+    def _line(label: str, d) -> None:
+        name = _name_of(d.matched_id, result.parents if label == "parent" else result.subunits)
+        s = d.signals
+        cos = f"{s['cosine']:+.2f}" if s.get("cosine") is not None else "  — "
+        exact = f"✓(span{s.get('exact_span', 0)})" if s.get("exact_match") else "·"
+        conf = "!" if s.get("qualifier_conflict") else "·"
+        typer.echo(
+            f"{label:8s}: {d.verdict:11s} (güven {d.confidence:.2f}) "
+            f"→ {name[:38]:38s} [id {d.matched_id or '—'}]"
+        )
+        typer.echo(
+            f"          sinyaller: tsr={s.get('tsr', 0):.0f} exact={exact} çelişki={conf} "
+            f"| gösterim: bm25={s.get('bm25_norm', 0):.2f} kosinüs={cos}  ({s.get('reason', '')})"
+        )
+
+    _line("parent", verdict.parent)
+    if verdict.subunit is not None:
+        _line("subunit", verdict.subunit)
+    else:
+        typer.echo("subunit : (sorguda birim ifadesi yok)")
+    typer.echo(f"\nunit_phrase: {verdict.unit_phrase or '—'}   [süre {dt:.2f}s, LLM yok]")
+
+
 @app.command("judge")
 def judge_cmd(
     query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),

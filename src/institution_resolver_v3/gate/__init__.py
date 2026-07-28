@@ -1,11 +1,18 @@
-"""Deterministik kapi: LLM'e gitmeyen kolay vakalar (maliyet + gecikme).
+"""Gate katmani - LLM'siz deterministik triyaj.
 
-Amac: trafigin bir kismini LLM'siz bitirmek. Kurallar (docs/V3_BASLANGIC §4):
-- Cop kapisi   : lexical_floor cok dusuk -> no_match (meslek unvani/adres/e-posta)
-- Acik-ara     : token_set_ratio ~1 + bm25_norm=1 + marj yeterli + qualifier temiz
-                 + kisa-akronim degil -> auto_match adayi
-- Bos havuz    : iki havuz da 0 -> no_match
+Asama 1 (su an): girdiyi (resolve sonucunu) guven-tabanli bir kovaya atar -
+tek cevap + hakemle ayni dilde verdict (auto_match/review/ambiguous/no_match).
+Ayrinti + skorlama gerekcesi: `gate.gate` modul docstring'i.
 
-ONEMLI (Ayrim 4): esikler LLM davranisi GORULDUKTEN sonra, gercek etiketli sette
-bir kez ayarlanir. Gate bir maliyet optimizasyonudur, kalite mekanizmasi degil.
+Sonraki asamalar (henuz tasarlanmadi): "review" kovasindan hakem/LLM'e devir,
+esiklerin gold setiyle kalibrasyonu.
 """
+
+from institution_resolver_v3.gate.gate import (
+    GateDecision,
+    GateResult,
+    gate,
+    score_candidate,
+)
+
+__all__ = ["GateDecision", "GateResult", "gate", "score_candidate"]
