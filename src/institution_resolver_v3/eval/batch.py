@@ -13,12 +13,12 @@ Tasarim ilkeleri:
 
 from __future__ import annotations
 
-import csv
 import json
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from institution_resolver_v3.eval.csv_runner import ProgressFn, run_csv_batch
 from institution_resolver_v3.judge.client import LlmError
 from institution_resolver_v3.judge.judge import JudgeValidationError
 from institution_resolver_v3.judge.judge import judge as _judge
@@ -40,9 +40,6 @@ FIELDNAMES = [
     "llm_s",
     "result_json",  # tam yapisal sonuc (JSON tek kolon)
 ]
-
-ProgressFn = Callable[[int, str, dict[str, Any]], None]
-
 
 def _name_of(pool: list, matched_id: str | None) -> str:
     if matched_id is None:
@@ -126,40 +123,12 @@ def run_batch(
     """`queries`'i tek tek isleyip `out_path`'e (CSV) yazar; ozet doner.
 
     `resume=True`: cikti dosyasi varsa icindeki 'query'ler atlanir (kaldigi
-    yerden devam). `limit`: en fazla bu kadar GIRDI satiri tuketilir."""
-    out_path = Path(out_path)
-    done: set[str] = set()
-    existing = resume and out_path.exists() and out_path.stat().st_size > 0
-    if existing:
-        with out_path.open(newline="", encoding="utf-8") as f:
-            done = {r["query"] for r in csv.DictReader(f)}
+    yerden devam). `limit`: en fazla bu kadar GIRDI satiri tuketilir. CSV
+    yazim/resume/limit mekanigi eval/csv_runner.py'de (3 batch turu ortak)."""
 
-    n_ok = n_err = n_skip = 0
-    mode = "a" if existing else "w"
-    with out_path.open(mode, newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        if not existing:
-            writer.writeheader()
-        for count, query in enumerate(queries, start=1):
-            if limit is not None and count > limit:
-                break
-            if query in done:
-                n_skip += 1
-                continue
-            rec = process_one(query, client, resolve_fn=resolve_fn, judge_fn=judge_fn, top=top)
-            writer.writerow(rec)
-            f.flush()  # progressive: cokme-guvenli
-            if rec["status"] == "ok":
-                n_ok += 1
-            else:
-                n_err += 1
-            if on_progress is not None:
-                on_progress(count, query, rec)
+    def _proc(query: str) -> dict[str, str]:
+        return process_one(query, client, resolve_fn=resolve_fn, judge_fn=judge_fn, top=top)
 
-    return {
-        "ok": n_ok,
-        "error": n_err,
-        "skipped": n_skip,
-        "total_written": n_ok + n_err,
-        "out": str(out_path),
-    }
+    return run_csv_batch(
+        queries, out_path, FIELDNAMES, _proc, limit=limit, resume=resume, on_progress=on_progress
+    )

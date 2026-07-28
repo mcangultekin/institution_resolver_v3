@@ -205,6 +205,166 @@ def judge_cmd(
     )
 
 
+@app.command("decide")
+def decide_cmd(
+    query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
+    model: str = typer.Option(None, "--model", help="Ollama model tag (varsayilan: config judge.model)"),
+    top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+) -> None:
+    """Tek sorgu: HIBRIT karar - once gate (LLM'siz); parent VEYA subunit
+    auto_match vermezse sorgunun tamami LLM hakeme devredilir (decide/decide.py).
+    Ikisi de auto oldugu 'kolay' sorgularda LLM HIC CAGRILMAZ (hiz/maliyet)."""
+    import time
+
+    from institution_resolver_v3.config import load_config
+    from institution_resolver_v3.decide.decide import decide as run_decide
+    from institution_resolver_v3.judge.client import LlmError, OllamaClient
+    from institution_resolver_v3.judge.judge import JudgeValidationError
+
+    cfg = load_config()["judge"]
+    client = OllamaClient(model=model or cfg["model"], host=cfg["host"])
+
+    t0 = time.time()
+    try:
+        d = run_decide(query, client, size=top)
+    except (JudgeValidationError, LlmError) as exc:
+        typer.echo(f"HAKEM HATASI: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    dt = time.time() - t0
+
+    def _name_of(matched_id: str | None, pool):
+        if matched_id is None:
+            return ""
+        c = next((c for c in pool if c.id == matched_id), None)
+        return c.name if c else ""
+
+    p_name = _name_of(d.parent.matched_id, d.resolve_result.parents)
+    typer.echo(
+        f"parent   : {d.parent.verdict:12s} {p_name:35s} id={d.parent.matched_id or '—'}  [{d.parent.decided_by}]"
+    )
+    if d.subunit is not None:
+        s_name = _name_of(d.subunit.matched_id, d.resolve_result.subunits)
+        typer.echo(
+            f"subunit  : {d.subunit.verdict:12s} {s_name:35s} id={d.subunit.matched_id or '—'}  [{d.subunit.decided_by}]"
+        )
+    else:
+        typer.echo("subunit  : (sorguda birim ifadesi yok)")
+    typer.echo(f"\nkarar kaynagi: {d.parent.decided_by}   [süre {dt:.2f}s]")
+
+
+@app.command("gate-batch")
+def gate_batch_cmd(
+    input_csv: str = typer.Argument(..., help="girdi CSV yolu"),
+    query_col: str = typer.Option("raw_name", "--query-col", help="sorgu metnini tasiyan kolon"),
+    out: str = typer.Option("gate_batch_sonuc.csv", "--out", help="sonuc CSV yolu"),
+    limit: int = typer.Option(None, "--limit", help="en fazla bu kadar girdi isle"),
+    resume: bool = typer.Option(False, "--resume", help="cikti varsa kaldigi yerden devam"),
+    top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+) -> None:
+    """Gate-only batch: CSV'deki kurum ifadelerini resolve+gate'ten gecirir
+    (LLM YOK - hizli on-triyaj/olcek testi, bkz. eval/gate_batch.py)."""
+    import csv as _csv
+
+    from institution_resolver_v3.eval.gate_batch import run_gate_batch
+
+    src = Path(input_csv)
+    if not src.exists():
+        typer.echo(f"Girdi CSV bulunamadi: {src}", err=True)
+        raise typer.Exit(code=1)
+
+    with src.open(newline="", encoding="utf-8") as f:
+        header = next(_csv.reader(f), [])
+    if query_col not in header:
+        typer.echo(f"'{query_col}' kolonu CSV'de yok. Mevcut kolonlar: {header}", err=True)
+        raise typer.Exit(code=1)
+
+    def _queries():
+        with src.open(newline="", encoding="utf-8") as fh:
+            for row in _csv.DictReader(fh):
+                q = (row.get(query_col) or "").strip()
+                if q:
+                    yield q
+
+    def _progress(i: int, query: str, rec: dict) -> None:
+        if rec["status"] == "error":
+            tail = f"HATA: {rec['error'][:60]}"
+        else:
+            sub = rec["subunit_verdict"] or "-"
+            tail = f"{rec['parent_verdict']}/{rec['parent_id'] or '-'} | subunit={sub}"
+        typer.echo(f"[{i}] {query[:50]!r:<54} -> {tail}", err=True)
+
+    typer.echo(f"Gate-batch basliyor: {src}  (kolon='{query_col}', LLM yok) -> {out}", err=True)
+    summary = run_gate_batch(
+        _queries(), out, limit=limit, resume=resume, top=top, on_progress=_progress
+    )
+    typer.echo(
+        f"\nBITTI: ok={summary['ok']}  hata={summary['error']}  atlandi={summary['skipped']}"
+        f"  -> {summary['out']}"
+    )
+
+
+@app.command("decide-batch")
+def decide_batch_cmd(
+    input_csv: str = typer.Argument(..., help="girdi CSV yolu"),
+    query_col: str = typer.Option("raw_name", "--query-col", help="sorgu metnini tasiyan kolon"),
+    out: str = typer.Option("decide_batch_sonuc.csv", "--out", help="sonuc CSV yolu"),
+    limit: int = typer.Option(None, "--limit", help="en fazla bu kadar girdi isle"),
+    resume: bool = typer.Option(False, "--resume", help="cikti varsa kaldigi yerden devam"),
+    model: str = typer.Option(None, "--model", help="Ollama model tag (varsayilan: config judge.model)"),
+    top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+) -> None:
+    """Hibrit batch: once gate (LLM'siz), auto_match vermezse sorgunun tamami
+    LLM'e devredilir (bkz. decide/decide.py, eval/decide_batch.py). Cikti
+    CSV'sinde 'decided_by' (gate/judge) VE gate sinyalleri her satirda (LLM'e
+    dusen satirlarda dahi) denetim icin yazilir."""
+    import csv as _csv
+
+    from institution_resolver_v3.config import load_config
+    from institution_resolver_v3.eval.decide_batch import run_decide_batch
+    from institution_resolver_v3.judge.client import OllamaClient
+
+    src = Path(input_csv)
+    if not src.exists():
+        typer.echo(f"Girdi CSV bulunamadi: {src}", err=True)
+        raise typer.Exit(code=1)
+
+    with src.open(newline="", encoding="utf-8") as f:
+        header = next(_csv.reader(f), [])
+    if query_col not in header:
+        typer.echo(f"'{query_col}' kolonu CSV'de yok. Mevcut kolonlar: {header}", err=True)
+        raise typer.Exit(code=1)
+
+    cfg = load_config()["judge"]
+    client = OllamaClient(model=model or cfg["model"], host=cfg["host"])
+
+    def _queries():
+        with src.open(newline="", encoding="utf-8") as fh:
+            for row in _csv.DictReader(fh):
+                q = (row.get(query_col) or "").strip()
+                if q:
+                    yield q
+
+    def _progress(i: int, query: str, rec: dict) -> None:
+        if rec["status"] == "error":
+            tail = f"HATA: {rec['error'][:60]}"
+        else:
+            sub = rec["subunit_verdict"] or "-"
+            tail = f"[{rec['decided_by']}] {rec['parent_verdict']}/{rec['parent_id'] or '-'} | subunit={sub}"
+        typer.echo(f"[{i}] {query[:50]!r:<54} -> {tail}", err=True)
+
+    typer.echo(
+        f"Decide-batch basliyor: {src}  (kolon='{query_col}', model={model or cfg['model']}) -> {out}",
+        err=True,
+    )
+    summary = run_decide_batch(
+        _queries(), client, out, limit=limit, resume=resume, top=top, on_progress=_progress
+    )
+    typer.echo(
+        f"\nBITTI: ok={summary['ok']}  hata={summary['error']}  atlandi={summary['skipped']}"
+        f"  -> {summary['out']}"
+    )
+
+
 @app.command("batch")
 def batch_cmd(
     input_csv: str = typer.Argument(..., help="girdi CSV yolu"),
