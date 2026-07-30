@@ -1,7 +1,7 @@
 # DURUM ve PLAN — Institution Resolver v3
 
 > Bu dosya devamlılık içindir: oturum kapanıp açılsa da (veya yeni bir Claude
-> oturumu) buradan tam bağlamı alır. Güncel tut. Son güncelleme: 2026-07-24.
+> oturumu) buradan tam bağlamı alır. Güncel tut. Son güncelleme: 2026-07-30.
 
 ## Amaç
 

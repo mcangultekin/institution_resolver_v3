@@ -25,6 +25,9 @@ data/eval/*_labeled.csv
 data/eval/*_sample.csv
 # ...ve bu sorgulari satir satir tasiyan analiz ciktilari (ayni kisisel veri)
 data/eval/ab_*.csv
+data/eval/gate_batch_*.csv
+data/eval/decide_batch_*.csv
+data/eval/gold_kuyruk_*.csv
 
 # API batch job girdi/ciktilari (kullanici verisi, bkz. api/routers/batch.py)
 data/jobs/
