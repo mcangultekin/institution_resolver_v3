@@ -18,9 +18,65 @@ from elasticsearch import Elasticsearch
 from institution_resolver_v3.elastic.client import es_config, get_client
 from institution_resolver_v3.normalize.query_pipeline import expand_query_text
 
-_PARENT_FIELDS = ["name^2.2", "name.ascii^1.5", "aliases_text^2", "aliases_text.ascii^1.3"]
 # subunit ESKİ agirliklarla SABİT - parent'taki degisiklik buraya sizmasin (bilerek kapsam disi)
 _SUBUNIT_FIELDS = ["name^3", "name.ascii^2", "aliases_text^1.5", "aliases_text.ascii", "parent_name^1.5", "parent_name.ascii"]
+# PARENT'in TEK arama kanali (2026-07-29): kanonik ad / alias AYRIMI YOK.
+# `name` ve birlesik `aliases_text` parent aramasindan CIKARILDI - ikisi de
+# nested `alias_variants` icinde zaten var (kanonik ad kayitlarin %100'unde
+# alias listesinde; alias'siz parent yok - ikisi de olculdu).
+_PARENT_ALIAS_VARIANT_FIELDS = ["alias_variants.value^2", "alias_variants.value.ascii^1.3"]
+
+
+def _multi_match(text: str, fields: list[str]) -> dict[str, Any]:
+    return {
+        "multi_match": {
+            "query": text,
+            "type": "most_fields",
+            "fields": fields,
+            "fuzziness": "AUTO",
+            "operator": "or",
+        }
+    }
+
+
+def _alias_variants_clause(text: str) -> dict[str, Any]:
+    """PARENT aramasinin TEK kanali: her yazim ayri nested belge, ORTAK havuz.
+
+    Tasarim karari (kullanici, 2026-07-29): kanonik ad ile alias arasinda ayrim
+    YOK. Butun yazimlar tek havuza girer, sorgu hepsine karsi ayni sekilde
+    aranir, hangisiyle eslesirse eslessin sonuc KURUMUN KANONIK KAYDI olur
+    (nested sorgu zaten parent belgesini dondurur).
+
+    Neden `name`/`aliases_text` cikarildi: ikisi de ayri alan olarak dururken
+    kanonik ad her iki kanali birden atesliyor ve skorlar toplaniyordu - yani
+    kanonik adin YAPISAL bir ayricaligi vardi. Birlesik `aliases_text` ayrica
+    alias sinirlarini kaybediyor: BM25'in alan-uzunlugu normu tek metne bakar,
+    boylece cok yazimli kurum sistematik dusuk puan alir. Burada her yazim kendi
+    belgesi, kendi uzunluk normu; `score_mode: max` ile kurumu EN IYI yazimi
+    temsil eder (alias sayisi ne odul ne ceza).
+
+    GUVENLIK: bu kanal `alias_variants`e TEK BASINA bagimli. Alan yalnizca
+    parent belgelerinde ve document.py'de uretiliyor; uretim bozulursa parent
+    aramasi komple korlesir. Iki on kosul OLCULDU (2026-07-29, 106.183 parent):
+    kanonik ad kayitlarin %100'unde alias listesinde, alias'siz parent 0 tane.
+    Kosullar `tests/unit/test_elastic_mapping.py`'de sabitlendi.
+
+    Olculdu (canli index, 200 kurum kendi alias'iyla arandi):
+                              alias top1 / top10 / havuz disi | kanonik top1
+    name+aliases_text (eski) :  %47.0 / %70.5 / %11.0         | %98.5
+    + nested (ara surum)     :  %58.5 / %86.5 /  %1.0         | %99.5
+    SADECE nested (bu)       :  %84.5 / %99.5 /  %0.5         | %100.0
+    Kanonik ad-alias ucurumu 51.5 -> 15.5 puana indi. Somut vaka: "middle east
+    technical university" (ODTU'nun alias'i birebir) eskiden ilk 50'de YOKTU,
+    ara surumde 14., bu surumde 1.
+    """
+    return {
+        "nested": {
+            "path": "alias_variants",
+            "score_mode": "max",
+            "query": _multi_match(text, _PARENT_ALIAS_VARIANT_FIELDS),
+        }
+    }
 
 
 def build_search_query(
@@ -30,26 +86,16 @@ def build_search_query(
 
     `extra_filters`: ek terim filtreleri (ör. parent-first cascade icin
     `{"term": {"parent_id": "..."}}`) - skor'u etkilemez, sadece havuzu daraltir.
+
+    PARENT: tek kanal - nested `alias_variants` (kanonik ad/alias ayrimi YOK,
+    bkz. `_alias_variants_clause`). SUBUNIT: eski alanlar ve eski yapi AYNEN
+    (bilerek kapsam disi) - parent'taki degisiklik buraya sizmaz.
     """
-    fields = _SUBUNIT_FIELDS if record_type == "subunit" else _PARENT_FIELDS
     filters: list[dict[str, Any]] = [{"term": {"record_type": record_type}}]
     filters.extend(extra_filters or [])
-    return {
-        "bool": {
-            "filter": filters,
-            "must": [
-                {
-                    "multi_match": {
-                        "query": text,
-                        "type": "most_fields",
-                        "fields": fields,
-                        "fuzziness": "AUTO",
-                        "operator": "or",
-                    }
-                }
-            ],
-        }
-    }
+    if record_type == "subunit":
+        return {"bool": {"filter": filters, "must": [_multi_match(text, _SUBUNIT_FIELDS)]}}
+    return {"bool": {"filter": filters, "must": [_alias_variants_clause(text)]}}
 
 
 def search(

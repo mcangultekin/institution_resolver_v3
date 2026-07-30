@@ -7,8 +7,9 @@ build/
 dist/
 .pytest_cache/
 
-# OS
+# OS / IDE
 .DS_Store
+.idea/
 
 # Veri: ham + islenmis buyuk dosyalar versiyonlanmaz (raporla yeniden uretilir)
 data/raw/
@@ -22,6 +23,8 @@ data/processed/embeddings*
 data/inbox/
 data/eval/*_labeled.csv
 data/eval/*_sample.csv
+# ...ve bu sorgulari satir satir tasiyan analiz ciktilari (ayni kisisel veri)
+data/eval/ab_*.csv
 
 # API batch job girdi/ciktilari (kullanici verisi, bkz. api/routers/batch.py)
 data/jobs/

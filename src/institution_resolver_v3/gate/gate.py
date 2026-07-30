@@ -15,9 +15,14 @@ Genis ornek testi (v2 isimler_tekrarsız, N=200) bunu dogruladi:
 
 Neyin AUTO oldugu (tek_exact): en iyi exact aday + span>=2 (tek generic token'la
 auto YOK - gozlemlenen yanlis-auto'lar span=1'di: "Acıbadem Hastanesi"->sube) +
-qualifier celiskisi yok + kisa-akronim degil + KARSISINDA esit-uzun ikinci exact
-YOK. Iki esit-uzun exact -> `ambiguous` (gercek ikiz). Hic exact yoksa: en iyi
-tsr taban altiysa `no_match`, degilse `review`.
+qualifier celiskisi yok + kisa-akronim degil + KARSISINDA baska exact YOK.
+Hic exact yoksa: en iyi tsr taban altiysa `no_match`, degilse `review`.
+
+Coklu exact -> `ambiguous`. Esik havuza gore FARKLI (2026-07-30, kullanici karari):
+- PARENT: HERHANGI ikinci exact auto'yu engeller (span farki gozetilmez).
+- SUBUNIT: yalnizca span'i kazanandan kucuk olmayan rakip engeller (eski davranis).
+Parent'taki siki kural bir risk tercihi; olculen bedeli ve gerekcesi
+`_decide_pool.any_rival_blocks_auto` docstring'inde.
 
 DIKKAT (kapsam - denenip BIRAKILDI, 2026-07-28): exact ISKALAYAN kurtarilabilir
 vakalar (yazim hatasi/kelime sirasi, ör. "Bozok Ünivesitesi") su an `review`e
@@ -124,6 +129,7 @@ def _decide_pool(
     query_part: str,
     floor_tsr: float,
     prefer_parent_id: str | None = None,
+    any_rival_blocks_auto: bool = False,
 ) -> GateDecision:
     """Bir havuzu (parent/subunit) exact-omurgali triyajdan gecirip TEK kovaya atar.
 
@@ -131,6 +137,18 @@ def _decide_pool(
     parent'in ALTINDAKI subunit adaylari tercih edilir - ayni adli subunit farkli
     parent'larda oldugunda (ör. iki universitede "GERİATRİ BİLİM DALI") dogru
     olani secilir; o parent altinda hic exact yoksa tum exact'lere geri donulur.
+
+    any_rival_blocks_auto (2026-07-30, kullanici karari - yalniz PARENT): havuzda
+    BIRDEN FAZLA guclu exact varsa `auto_match` VERILMEZ, span farkina bakilmaz.
+    Varsayilan (False) davranis: yalnizca span'i kazanandan KUCUK OLMAYAN rakip
+    engeller - yani uzun/spesifik exact, kendi icindeki kisa/jenerik exact'i
+    yener ("Bayburt State Hospital" vs "State Hospital").
+    Bu bayragin bedeli OLCULDU (benchmark_500_sample ilk 150 sorgu): 5 sorgu
+    (%3.3) auto_match'ten ambiguous'a duser ve besinde de bugunku secim DOGRU
+    gorunuyordu; ornekler jenerik alt-parca rakipleriydi (İSTANBUL ÜNİVERSİTESİ-
+    CERRAHPAŞA vs İSTANBUL ÜNİVERSİTESİ). Yani bu ayar hata onlemiyor, "supheli
+    auto yerine belirsizlik" risk tercihini uyguluyor - geri almak icin cagriyi
+    False'a cekmek yeterli. SUBUNIT'te KAPALI (kapsam disi).
     """
     if not candidates:
         return GateDecision("no_match", None, 0.0, {"reason": "bos_havuz"})
@@ -160,9 +178,14 @@ def _decide_pool(
     if _is_short_acronym(query_part):
         return GateDecision("review", best.id, conf, _signals_of(best, reason="akronim"))
 
-    rivals = [c for c in exact if c.id != best.id and _exact_span(c) >= _exact_span(best)]
+    if any_rival_blocks_auto:
+        rivals = [c for c in exact if c.id != best.id]
+        reason = "coklu_exact_herhangi"      # span farki gozetilmedi (parent karari)
+    else:
+        rivals = [c for c in exact if c.id != best.id and _exact_span(c) >= _exact_span(best)]
+        reason = "coklu_exact"
     if rivals:
-        return GateDecision("ambiguous", best.id, conf, _signals_of(best, reason="coklu_exact"))
+        return GateDecision("ambiguous", best.id, conf, _signals_of(best, reason=reason))
 
     return GateDecision("auto_match", best.id, conf, _signals_of(best, reason="tek_exact"))
 
@@ -218,7 +241,12 @@ def gate(result: ResolveResult, *, config: dict[str, Any] | None = None) -> Gate
     floor_tsr = float(gc.get("garbage_lexical_floor", 0.55))
 
     institution_part = result.decomposed.institution_part or result.query
-    parent = _decide_pool(result.parents, query_part=institution_part, floor_tsr=floor_tsr)
+    # PARENT'ta birden fazla exact -> auto YOK (span farkina bakilmaz, kullanici
+    # karari 2026-07-30; bkz. _decide_pool any_rival_blocks_auto). Subunit'te KAPALI.
+    parent = _decide_pool(
+        result.parents, query_part=institution_part, floor_tsr=floor_tsr,
+        any_rival_blocks_auto=True,
+    )
 
     unit_phrase = (result.decomposed.unit_part or "").strip() or None
     if unit_phrase is None:

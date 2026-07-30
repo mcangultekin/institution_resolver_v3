@@ -89,13 +89,41 @@ def build_mapping() -> dict[str, Any]:
                 "analyzer": "turkish_analyzer",
                 "fields": {"ascii": {"type": "text", "analyzer": "ascii_analyzer"}},
             },
-            # Alias'larin AYRI liste hali - ARAMAYA KAPALI (aramayi aliases_text
-            # yapar); decompose'un sinir skorunu her alias'a karsi TEK TEK
-            # (uzunluk-duyarli fuzz.ratio) hesaplayabilmesi icin _source'ta tutulur.
+            # Alias'larin AYRI liste hali - ARAMAYA KAPALI. Aramayi SUBUNIT'te
+            # `aliases_text`, PARENT'ta nested `alias_variants` yapar (2026-07-30:
+            # parent artik `aliases_text`i ARAMIYOR, asagi bkz.). Bu liste
+            # decompose'un sinir skorunu her alias'a karsi TEK TEK (uzunluk-duyarli
+            # fuzz.ratio) hesaplayabilmesi icin _source'ta tutulur.
             # Birlesik aliases_text'e karsi partial_ratio KULLANILMAZ: tek kelimelik
             # jenerik pencere ("üniversitesi") her birlesik metinde 100 bulur - yeni
             # bir cekim-merkezi dogurur (bkz. docs/DENEY_2026-07-23_parent_dogrulama.md).
             "aliases": {"type": "keyword", "index": False, "doc_values": False},
+            # PARENT aramasinin TEK kanali (2026-07-29 eklendi, 2026-07-30'da
+            # `name`/`aliases_text` cikarilinca tek kanal oldu). Her alias AYRI
+            # bir nested belge -> her yazim KENDI alan-uzunlugu normuyla puanlanir.
+            # Neden birlesik `aliases_text` yetmiyordu: BM25'in alan-uzunlugu
+            # normu tek metne bakar, dolayisiyla 6 alias'li kurum 1 alias'li
+            # kurumdan sistematik olarak dusuk puan aliyordu - kendi alias'iyla
+            # aranan kurum havuza HIC giremeyebiliyordu. Nested + `score_mode:max`
+            # ile kurumu EN IYI yazimi temsil eder, alias sayisi ceza olmaktan
+            # cikar. Kanonik ad da bu havuzun bir uyesi (kayitlarin %100'unde
+            # alias listesinde) - kanonik/alias ayrimi YOK, gerekce ve olcumler
+            # search.py `_alias_variants_clause` docstring'inde.
+            # SADECE PARENT belgelerinde uretilir (document.py); subunit kapsam
+            # disi ve `aliases_text` ile aranmaya devam eder - o yuzden
+            # `aliases_text` HER IKI record_type'ta doldurulmaya devam eder
+            # (parent'lardan kaldirilirsa subunit'in BM25 alan istatistikleri,
+            # dolayisiyla skorlari kayar).
+            "alias_variants": {
+                "type": "nested",
+                "properties": {
+                    "value": {
+                        "type": "text",
+                        "analyzer": "turkish_analyzer",
+                        "fields": {"ascii": {"type": "text", "analyzer": "ascii_analyzer"}},
+                    }
+                },
+            },
             "parent_name": _text_field(),              # subunit'e denormalize (parent enjeksiyonu)
             "kind_label_raw": {"type": "keyword"},
             "unit_type": {"type": "keyword"},

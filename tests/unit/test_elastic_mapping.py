@@ -80,10 +80,15 @@ def test_build_document_dedups_alias_values() -> None:
 from institution_resolver_v3.elastic.search import build_search_query
 
 
+def _parent_nested(q: dict) -> dict:
+    """parent sorgusunun TEK kanali: nested alias_variants."""
+    return q["bool"]["must"][0]["nested"]
+
+
 def test_search_query_filters_record_type() -> None:
     q = build_search_query("gazi universitesi", "parent")
     assert q["bool"]["filter"] == [{"term": {"record_type": "parent"}}]
-    assert q["bool"]["must"][0]["multi_match"]["fuzziness"] == "AUTO"
+    assert _parent_nested(q)["query"]["multi_match"]["fuzziness"] == "AUTO"
 
 
 def test_subunit_query_includes_parent_name_field() -> None:
@@ -91,9 +96,104 @@ def test_subunit_query_includes_parent_name_field() -> None:
     fields = q["bool"]["must"][0]["multi_match"]["fields"]
     assert any(f.startswith("parent_name") for f in fields)   # parent enjeksiyonu aramada
     # parent aramasinda parent_name YOK
-    qp = build_search_query("gazi", "parent")
-    fields_p = qp["bool"]["must"][0]["multi_match"]["fields"]
-    assert not any(f.startswith("parent_name") for f in fields_p)
+    parent_fields = _parent_nested(build_search_query("gazi", "parent"))["query"]["multi_match"]["fields"]
+    assert not any(f.startswith("parent_name") for f in parent_fields)
+
+
+# --------------------------------------------------------------------------- #
+# PARENT: kanonik ad / alias ayrimi YOK - butun yazimlar tek ortak havuzda.
+# Olculdu (200 kurum, canli index): alias top1 %47.0 -> %84.5, kanonik %100,
+# aradaki ucurum 51.5 -> 15.5 puan.
+# --------------------------------------------------------------------------- #
+def test_parent_query_searches_each_alias_separately() -> None:
+    nested = _parent_nested(build_search_query("gazi university", "parent"))
+    assert nested["path"] == "alias_variants"
+    assert nested["score_mode"] == "max"        # alias sayisi ne odul ne ceza
+    assert nested["query"]["multi_match"]["fields"] == [
+        "alias_variants.value^2",
+        "alias_variants.value.ascii^1.3",
+    ]
+
+
+def test_parent_query_has_no_separate_name_or_aliases_text_channel() -> None:
+    """Ayrim YOK: `name` ve birlesik `aliases_text` parent aramasindan CIKARILDI.
+
+    Ikisi de ayri kanal olarak dururken kanonik ad her iki kanali birden
+    atesleyip skor topluyordu - yapisal ayricalik. Yazimlarin tamami zaten
+    `alias_variants` icinde (bkz. asagidaki on kosul testleri).
+    """
+    q = build_search_query("gazi", "parent")
+    assert len(q["bool"]["must"]) == 1                     # tek kanal
+    assert "should" not in q["bool"]
+    metin = str(q)
+    assert "aliases_text" not in metin
+    assert "name^" not in metin and "name.ascii" not in metin
+
+
+def test_subunit_query_unchanged_by_parent_alias_channel() -> None:
+    """Subunit kapsam disi: eski alanlar, eski yapi, nested kanal YOK."""
+    q = build_search_query("istatistik bolumu", "subunit")
+    assert "should" not in q["bool"]
+    assert len(q["bool"]["must"]) == 1
+    assert "nested" not in str(q)
+    assert q["bool"]["must"][0]["multi_match"]["fields"] == [
+        "name^3", "name.ascii^2", "aliases_text^1.5", "aliases_text.ascii",
+        "parent_name^1.5", "parent_name.ascii",
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# D varyantinin ON KOSULLARI - parent aramasi artik SADECE `alias_variants`e
+# bagimli. Bu iki kosul bozulursa parent aramasi sessizce korlesir, o yuzden
+# testle sabitlendi (ikisi de 106.183 parent uzerinde olculdu: %100 ve 0).
+# --------------------------------------------------------------------------- #
+def test_parent_alias_variants_always_contains_canonical_name() -> None:
+    """Kanonik ad, alias listesinde de bulundugu icin nested havuza girer."""
+    p = {"id": "1", "record_type": "parent", "name": "GAZİ ÜNİVERSİTESİ",
+         "normalized_name": "gazi universitesi",
+         "aliases": [{"value": "GAZİ ÜNİVERSİTESİ", "locale": "tr", "source": "legacy_row"},
+                     {"value": "GAZI UNIVERSITY", "locale": "en", "source": "ror"}]}
+    doc = build_document(p, {})
+    assert {"value": "GAZİ ÜNİVERSİTESİ"} in doc["alias_variants"]
+
+
+def test_parent_without_aliases_is_unsearchable_and_must_not_happen() -> None:
+    """Alias'siz parent ARANAMAZ hale gelir - kanonik veride boyle kayit YOK.
+
+    Bu test davranisi 'dogru' diye sabitlemiyor; tehlikeyi gorunur kiliyor.
+    Ingest bir gun alias'siz parent uretirse arama sessizce degil, burada patlar.
+    """
+    p = {"id": "9", "record_type": "parent", "name": "X", "normalized_name": "x",
+         "aliases": []}
+    doc = build_document(p, {})
+    assert doc["alias_variants"] == []      # -> nested sorgu bu kaydi ASLA bulamaz
+
+
+def test_parent_document_has_one_nested_doc_per_alias() -> None:
+    p = {"id": "101", "record_type": "parent", "name": "GAZİ ÜNİVERSİTESİ",
+         "normalized_name": "gazi universitesi",
+         "aliases": [{"value": "GAZI UNIVERSITY", "locale": "en", "source": "ror"},
+                     {"value": "GÜ", "locale": "tr", "source": "legacy"}]}
+    doc = build_document(p, {})
+    assert doc["alias_variants"] == [{"value": "GAZI UNIVERSITY"}, {"value": "GÜ"}]
+    assert "GAZI UNIVERSITY" in doc["aliases_text"]            # birlesik kanal da duruyor
+
+
+def test_subunit_document_has_no_alias_variants() -> None:
+    parents = [{"id": "101", "name": "GAZİ ÜNİVERSİTESİ", "record_type": "parent"}]
+    sub = {"id": "5", "record_type": "subunit", "parent_id": "101",
+           "name": "İSTATİSTİK BÖLÜMÜ", "normalized_name": "istatistik bolumu",
+           "aliases": [{"value": "DEPARTMENT OF STATISTICS", "locale": "en", "source": "yok"}]}
+    doc = build_document(sub, build_parent_name_index(parents))
+    assert "alias_variants" not in doc
+    assert "DEPARTMENT OF STATISTICS" in doc["aliases_text"]
+
+
+def test_mapping_alias_variants_is_nested() -> None:
+    av = build_mapping()["properties"]["alias_variants"]
+    assert av["type"] == "nested"
+    assert av["properties"]["value"]["analyzer"] == "turkish_analyzer"
+    assert set(av["properties"]["value"]["fields"]) == {"ascii"}
 
 
 # --------------------------------------------------------------------------- #

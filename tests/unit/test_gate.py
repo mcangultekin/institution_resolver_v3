@@ -129,7 +129,42 @@ def test_two_equal_span_exact_ambiguous() -> None:
     ]
     g = gate(_result(parents=parents, institution_part="suleyman demirel universitesi"), config=_CFG)
     assert g.parent.verdict == "ambiguous"
-    assert g.parent.signals["reason"] == "coklu_exact"
+    assert g.parent.signals["reason"] == "coklu_exact_herhangi"
+
+
+def test_parent_shorter_generic_exact_also_blocks_auto() -> None:
+    """PARENT'ta HERHANGI ikinci exact auto'yu engeller (2026-07-30 kullanici karari).
+
+    Eski davranista kazananin ICINDEKI kisa/jenerik exact ("state hospital")
+    auto'yu engellemiyordu; artik engelliyor. Olculen bedel: benchmark'in ilk 150
+    sorgusunda 5 karar (%3.3) auto'dan ambiguous'a duser.
+    """
+    parents = [
+        _cand("1", "BAYBURT STATE HOSPITAL", tsr=100.0, exact_text="bayburt state hospital"),
+        _cand("2", "STATE HOSPITAL", tsr=90.0, exact_text="state hospital"),
+    ]
+    g = gate(_result(parents=parents, institution_part="bayburt state hospital"), config=_CFG)
+    assert g.parent.verdict == "ambiguous"
+    assert g.parent.matched_id == "1"          # yine en spesifik aday raporlanir
+    assert g.parent.signals["reason"] == "coklu_exact_herhangi"
+
+
+def test_subunit_keeps_old_span_rule() -> None:
+    """SUBUNIT kapsam disi: kisa/jenerik ikinci exact orada auto'yu ENGELLEMEZ."""
+    parents = [_cand("1", "GAZI UNIVERSITESI", tsr=100.0, exact_text="gazi universitesi")]
+    subunits = [
+        _cand("10", "KARDIYOLOJI ANABILIM DALI", tsr=100.0,
+              exact_text="kardiyoloji anabilim dali", parent_id="1"),
+        _cand("11", "ANABILIM DALI", tsr=80.0, exact_text="anabilim dali", parent_id="1"),
+    ]
+    g = gate(
+        _result(parents=parents, subunits=subunits,
+                institution_part="gazi universitesi", unit_part="kardiyoloji anabilim dali"),
+        config=_CFG,
+    )
+    assert g.subunit is not None
+    assert g.subunit.verdict == "auto_match"
+    assert g.subunit.signals["reason"] == "tek_exact"
 
 
 def test_short_acronym_exact_review() -> None:

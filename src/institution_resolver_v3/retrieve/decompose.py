@@ -253,9 +253,13 @@ def decompose(
             # Skor = name + HER alias'a karsi ayri ayri fuzz.ratio'nun en iyisi.
             # Kanitli kacak sinifi (30-sorgu duman testi, 2026-07-23): sorgu
             # Ingilizce ad/akronimle gelir ("JAMSTEC", "Westfälische
-            # Wilhelms-Universität"), kayit farkli kanonik adla durur - ES
-            # aliases_text'ten bulur ama name-ratio dusuk kalinca hipotez
-            # dogamiyordu. Alias'lar TEK TEK karsilastirilir (uzunluk-duyarli
+            # Wilhelms-Universität"), kayit farkli kanonik adla durur - ES kaydi
+            # alias uzerinden bulur (2026-07-30 sonrasi parent'ta nested
+            # `alias_variants` kanali; eskiden birlesik `aliases_text`) ama
+            # name-ratio dusuk kalinca hipotez dogamiyordu. Bu skorun ES
+            # kanalindan BAGIMSIZ oldugu unutulmamali: burada _source'taki
+            # `aliases` listesi kullanilir, sorgu alanlari degisse de gecerli.
+            # Alias'lar TEK TEK karsilastirilir (uzunluk-duyarli
             # ratio korunur); birlesik metne partial_ratio KULLANILMAZ
             # (jenerik pencere tuzagi - bkz. mappings.py "aliases" notu).
             score = max(

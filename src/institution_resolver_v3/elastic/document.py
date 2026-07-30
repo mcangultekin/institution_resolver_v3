@@ -43,6 +43,9 @@ def build_document(
         "record_type": rt,
         "name": record["name"],
         "normalized_name": record.get("normalized_name"),
+        # subunit aramasinin alias kanali (parent'ta ARANMAZ - orada nested
+        # `alias_variants` kullanilir; alan yine de doldurulur ki `aliases_text`
+        # istatistikleri, dolayisiyla subunit skorlari degismesin)
         "aliases_text": " ".join(alias_values),
         # ayri liste: decompose'un alias-farkindalikli sinir skoru icin
         # (aramaya kapali alan, bkz. mappings.py)
@@ -50,6 +53,9 @@ def build_document(
     }
 
     if rt == "parent":
+        # her yazim AYRI nested belge - parent aramasinin alias kanali
+        # (bkz. mappings.py "alias_variants"); sadece parent'ta uretilir.
+        doc["alias_variants"] = [{"value": v} for v in alias_values]
         doc["country"] = record.get("country")
         doc["city"] = record.get("city")
         doc["canonical_ref"] = record.get("canonical_ref")
