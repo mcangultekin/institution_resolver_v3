@@ -122,6 +122,17 @@ def test_no_exact_above_floor_review() -> None:
     assert g.parent.signals["reason"] == "exact_yok"
 
 
+def test_no_exact_review_applies_conflict_penalty_to_confidence() -> None:
+    """Dalga2 #10a: confidence tek formule (score_candidate) - 'exact yok'
+    dalinda da nitelik celiskisi cezasi uygulanmali, ham tsr/100 degil.
+    Verdict degismiyor (review), sadece gosterilen sayi dogrulaniyor."""
+    parents = [_cand("1", "YOZGAT BOZOK UNIVERSITESI", tsr=90.0, conflict=True)]
+    g = gate(_result(parents=parents), config=_CFG)
+    assert g.parent.verdict == "review"
+    assert g.parent.confidence == score_candidate(parents[0])
+    assert g.parent.confidence < 0.90  # ceza uygulanmis olmali (0.90 - 0.30 = 0.60)
+
+
 def test_two_equal_span_exact_ambiguous() -> None:
     parents = [
         _cand("1", "SULEYMAN DEMIREL UNIVERSITESI", tsr=100.0, exact_text="suleyman demirel universitesi"),
@@ -229,7 +240,7 @@ def test_coherence_parent_review_caps_subunit_auto() -> None:
     g = gate(_result(parents=parents, subunits=subs, unit_part="geriatri bilim dali"), config=_CFG)
     assert g.parent.verdict == "review"
     assert g.subunit.verdict == "review"                       # auto -> review
-    assert g.subunit.matched_id == "900"                       # ONERI korunur
+    assert g.subunit.matched_id is None                        # 2026-07-30: KIMLIK onerilmez
     assert g.subunit.signals["capped_from"] == "auto_match"
     assert g.subunit.signals["reason"] == "parent_kesin_degil"
 
@@ -247,7 +258,7 @@ def test_coherence_parent_ambiguous_caps_subunit_auto() -> None:
                      unit_part="ticaret hukuku abd"), config=_CFG)
     assert g.parent.verdict == "ambiguous"
     assert g.subunit.verdict == "review"
-    assert g.subunit.matched_id == "900"
+    assert g.subunit.matched_id is None                        # 2026-07-30: KIMLIK onerilmez
 
 
 def test_coherence_subunit_auto_under_wrong_parent_capped() -> None:
@@ -259,5 +270,24 @@ def test_coherence_subunit_auto_under_wrong_parent_capped() -> None:
     g = gate(_result(parents=parents, subunits=subs, unit_part="geriatri bilim dali"), config=_CFG)
     assert g.parent.verdict == "auto_match" and g.parent.matched_id == "14"
     assert g.subunit.verdict == "review"
-    assert g.subunit.matched_id == "900"
+    assert g.subunit.matched_id is None                        # 2026-07-30: KIMLIK onerilmez
     assert g.subunit.signals["parent_verdict"] == "auto_match"
+
+
+def test_coherence_ambiguous_subunit_loses_id_when_parent_not_auto() -> None:
+    """2026-07-30 (kullanici karari): kural sadece auto->review dususunu degil,
+    subunit'in KENDI review/ambiguous verdict'ini de kapsamali - iki adayli bir
+    subunit havuzunda (esit span exact -> ambiguous) parent auto_match degilse,
+    o iki adaydan HANGISININ onerilecegi zaten anlamsiz (parent bilinmeden
+    subunit kimligi tamamlanmaz)."""
+    parents = [_cand("1", "YOZGAT BOZOK UNIVERSITESI", tsr=97.0)]  # exact yok -> review
+    subs = [
+        _cand("900", "GERIATRI BILIM DALI", tsr=100.0, exact_text="geriatri bilim dali",
+              record_type="subunit", parent_id="1"),
+        _cand("901", "GERIATRI BILIM DALI", tsr=100.0, exact_text="geriatri bilim dali",
+              record_type="subunit", parent_id="14"),
+    ]
+    g = gate(_result(parents=parents, subunits=subs, unit_part="geriatri bilim dali"), config=_CFG)
+    assert g.parent.verdict == "review"
+    assert g.subunit.verdict == "ambiguous"       # kendi ici zaten ambiguous, degismiyor
+    assert g.subunit.matched_id is None           # ama artik KIMLIK onerilmiyor

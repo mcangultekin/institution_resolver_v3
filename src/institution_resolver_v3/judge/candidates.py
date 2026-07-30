@@ -47,6 +47,7 @@ class CandidateView:
     city: str | None = None
     kind_label: str | None = None
     parent_name: str | None = None
+    parent_id: str | None = None  # subunit'te doldurulur - judge._validate_ids capraz kontrolu icin
 
 
 def _parent_view(c: ScoredCandidate) -> CandidateView:
@@ -84,6 +85,7 @@ def _subunit_view(c: ScoredCandidate, parent_context: dict[str, ScoredCandidate]
         city=(parent.raw.get("city") if parent else None),
         kind_label=c.raw.get("kind_label_raw"),
         parent_name=c.raw.get("parent_name"),
+        parent_id=parent_id,
     )
 
 

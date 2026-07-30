@@ -108,6 +108,20 @@ function verdictBadge(v) {
   return `<span class="badge ${v}">${labels[v] || v}</span>`;
 }
 
+function renderError(detail, fallback) {
+  // detail bazi endpoint'lerde duz string (ör. /batch/*), bazilarinda
+  // {message, debug} nesnesi (ör. /judge, /decide - JudgeValidationError,
+  // bkz. api/routers/single.py _error_detail). Ikisini de karsilar - nesneyi
+  // dogrudan sablona gomersek "[object Object]" cikardi.
+  if (detail && typeof detail === 'object') {
+    const debugHtml = detail.debug
+      ? `<details><summary>Ayrıntı</summary><pre>${detail.debug}</pre></details>`
+      : '';
+    return `<p class="error">Hata: ${detail.message || fallback}</p>${debugHtml}`;
+  }
+  return `<p class="error">Hata: ${detail || fallback}</p>`;
+}
+
 function renderDecision(title, d) {
   if (!d) return `<div class="field"><div class="label">${title}</div><div class="value">(sorguda yok)</div></div>`;
   const parentSuffix = d.parent_name ? ` <span class="hint">(${d.parent_name})</span>` : '';
@@ -145,7 +159,7 @@ async function runQuery() {
     });
     const body = await res.json();
     if (!res.ok) {
-      out.innerHTML = `<p class="error">Hata: ${body.detail || res.status}</p>`;
+      out.innerHTML = renderError(body.detail, res.status);
       return;
     }
     out.innerHTML = `
@@ -182,7 +196,7 @@ async function runBatch() {
     const res = await fetch('/batch/' + mode, {method: 'POST', body: form});
     const body = await res.json();
     if (!res.ok) {
-      out.innerHTML = `<p class="error">Hata: ${body.detail || res.status}</p>`;
+      out.innerHTML = renderError(body.detail, res.status);
       btn.disabled = false;
       return;
     }

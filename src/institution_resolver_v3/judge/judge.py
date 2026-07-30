@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from institution_resolver_v3.judge.candidates import CandidateView, build_candidate_views
 from institution_resolver_v3.judge.client import LlmClient
 from institution_resolver_v3.judge.prompt import build_prompt
-from institution_resolver_v3.judge.schema import JudgeResult
+from institution_resolver_v3.judge.schema import JudgeResult, SubunitDecision
 from institution_resolver_v3.retrieve.resolve import ResolveResult
 
 
@@ -113,10 +113,16 @@ def build_format_schema(
 class JudgeValidationError(RuntimeError):
     """LLM ciktisi sema disi ya da aday havuzunda olmayan bir id iceriyor.
 
-    Mesaj, pydantic'in teknik `ValidationError` metnini (type=value_error,
-    input_value=... gibi gelistirici-yonelimli jargon) DEGIL, sade Turkce bir
-    aciklama tasir - bkz. `_format_validation_error` (2026-07-24, kullanici
-    "anlasilir hata mesaji" talebi)."""
+    Ana mesaj (`str(exc)`) SABIT/JENERIK - sorgu basina degisen isim/id
+    icermez (2026-07-30, kullanici karari: kisa ve tutarli olsun). Sorguya
+    ozel ayrinti `debug` alaninda ayrica tasinir - "info butonu" gibi
+    istege bagli gosterim icin (API `detail.debug`, CLI `--debug` benzeri;
+    varsayilan gorunumde gizli). Eskiden (2026-07-24, "anlasilir hata
+    mesaji" talebi) tek bir uzun cumleye gomuluyordu, artik ikiye ayrildi."""
+
+    def __init__(self, message: str, *, debug: str | None = None) -> None:
+        super().__init__(message)
+        self.debug = debug
 
 
 def _format_validation_error(exc: ValidationError) -> str:
@@ -140,22 +146,35 @@ def _format_validation_error(exc: ValidationError) -> str:
 def _validate_ids(
     result: JudgeResult, parents: list[CandidateView], subunits: list[CandidateView]
 ) -> None:
+    """Katalog-karsi dogrulama: uydurma id (halusinasyon) VE parent/subunit
+    tutarsizligi (2026-07-30) ayni sinif hata - ikisi de "hakemin dedigi,
+    katalogdaki gercekle celisiyor" demek, sessizce gecilmez."""
     parent_ids = {c.id for c in parents}
-    subunit_ids = {c.id for c in subunits}
+    subunit_by_id = {c.id: c for c in subunits}
     if result.parent.matched_id is not None and result.parent.matched_id not in parent_ids:
         raise JudgeValidationError(
-            f"Hakem, kurum (parent) için aday listesinde OLMAYAN bir id döndürdü: "
-            f"{result.parent.matched_id!r} (muhtemelen uydurma/halüsinasyon)."
+            "Hakem geçersiz bir cevap verdi (bilinmeyen kurum kaydı).",
+            debug=f"parent.matched_id={result.parent.matched_id!r} aday havuzunda yok (halüsinasyon).",
         )
-    if (
-        result.subunit is not None
-        and result.subunit.matched_id is not None
-        and result.subunit.matched_id not in subunit_ids
-    ):
-        raise JudgeValidationError(
-            f"Hakem, alt-birim (subunit) için aday listesinde OLMAYAN bir id döndürdü: "
-            f"{result.subunit.matched_id!r} (muhtemelen uydurma/halüsinasyon)."
-        )
+    if result.subunit is not None and result.subunit.matched_id is not None:
+        if result.subunit.matched_id not in subunit_by_id:
+            raise JudgeValidationError(
+                "Hakem geçersiz bir cevap verdi (bilinmeyen alt-birim kaydı).",
+                debug=f"subunit.matched_id={result.subunit.matched_id!r} aday havuzunda yok (halüsinasyon).",
+            )
+        sub_view = subunit_by_id[result.subunit.matched_id]
+        if (
+            result.parent.matched_id is not None
+            and sub_view.parent_id is not None
+            and sub_view.parent_id != result.parent.matched_id
+        ):
+            raise JudgeValidationError(
+                "Hakem tutarsız bir cevap verdi (kurum/birim uyuşmazlığı).",
+                debug=(
+                    f"subunit={sub_view.name!r} gerçek parent_id={sub_view.parent_id!r}, "
+                    f"ama hakemin seçtiği parent.matched_id={result.parent.matched_id!r}."
+                ),
+            )
 
 
 def _label_views(
@@ -187,15 +206,16 @@ def judge(resolve_result: ResolveResult, client: LlmClient) -> JudgeResult:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise JudgeValidationError(
-            f"Hakem geçerli bir JSON döndürmedi (metin çıktısı bozuk): {exc}. "
-            f"Ham çıktının başı: {raw[:200]!r}"
+            "Hakem geçerli bir yanıt döndürmedi (biçim hatası).",
+            debug=f"JSON parse hatası: {exc}. Ham çıktının başı: {raw[:200]!r}",
         ) from exc
 
     try:
         result = JudgeResult.model_validate(payload)
     except ValidationError as exc:
         raise JudgeValidationError(
-            f"Hakemin cevabı çelişkili/eksik: {_format_validation_error(exc)}"
+            "Hakemin cevabı şemaya uymuyor (çelişkili/eksik alan).",
+            debug=_format_validation_error(exc),
         ) from exc
 
     # "etiket|ad" -> gercek id cevirisi (bkz. _label_views/_choice). Haritada
@@ -212,4 +232,20 @@ def judge(resolve_result: ResolveResult, client: LlmClient) -> JudgeResult:
         result.subunit.matched_id = _to_real(result.subunit.matched_id, s_map)
 
     _validate_ids(result, parents, subunits)
+
+    # 2026-07-30 (kullanici karari, gate'teki ayni ilke): parent no_match ise
+    # (matched_id=None), subunit bir KIMLIK oneremez - subunit adlari parent'lar
+    # arasinda kitlesel tekrarlanabiliyor (ör. "bilgisayar muhendisligi bolumu"
+    # x190), parent bilinmeden secilen id N aday arasindan bir tahmindir. Bu bir
+    # celiski DEGIL (bkz. _validate_ids'teki parent/subunit uyusmazligi - o
+    # reddedilir), o yuzden hata firlatilmaz, asagi indirgenir. verdict de
+    # no_match'e cekilir - schema.py _matched_id_consistency, verdict!=no_match
+    # icin matched_id'yi zorunlu kilar, ikisi birlikte degismeli.
+    if (
+        result.subunit is not None
+        and result.subunit.matched_id is not None
+        and result.parent.matched_id is None
+    ):
+        result.subunit = SubunitDecision(verdict="no_match", matched_id=None)
+
     return result

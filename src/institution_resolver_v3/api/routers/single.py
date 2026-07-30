@@ -34,6 +34,14 @@ from institution_resolver_v3.judge.judge import JudgeValidationError
 router = APIRouter(tags=["single"])
 
 
+def _error_detail(exc: Exception) -> dict[str, str | None]:
+    """Sabit/jenerik `message` + sorguya-ozel `debug` (2026-07-30, kullanici
+    karari: "info butonu" - `message` her zaman gosterilir, `debug` istege
+    baglidir). `LlmError`'da `debug` yok (JudgeValidationError'a ozgu), o
+    zaman `None` doner - bkz. judge/judge.py `JudgeValidationError`."""
+    return {"message": str(exc), "debug": getattr(exc, "debug", None)}
+
+
 def _name_of(matched_id: str | None, pool) -> str | None:
     if matched_id is None:
         return None
@@ -152,7 +160,7 @@ def judge_endpoint(
     try:
         verdict = judge_fn(result, client)
     except (JudgeValidationError, LlmError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        raise HTTPException(status_code=502, detail=_error_detail(exc)) from None
     return JudgeResponse(
         query=result.query,
         parent=JudgeDecisionOut(
@@ -190,7 +198,7 @@ def decide_endpoint(
     try:
         d = decide_fn(req.query, client, size=req.top)
     except (JudgeValidationError, LlmError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        raise HTTPException(status_code=502, detail=_error_detail(exc)) from None
     return DecideResponse(
         query=d.query,
         parent=DecideDecisionOut(

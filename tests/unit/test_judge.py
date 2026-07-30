@@ -268,17 +268,26 @@ class TestJudgeHappyPath:
 
 
 class TestJudgeValidation:
+    """2026-07-30 (kullanici karari): JudgeValidationError mesaji sabit/jenerik
+    olmali (sorgu basina degisen isim/id yok), ayrinti `debug` alaninda
+    ('info butonu' - varsayilan gorunumde gizli, istege bagli). Her test
+    hem ana mesaji hem debug'in DOLU oldugunu kontrol eder."""
+
     def test_invalid_json_raises(self):
         client = _FakeClient("bu JSON degil, duz metin")
-        with pytest.raises(JudgeValidationError):
+        with pytest.raises(JudgeValidationError) as exc_info:
             judge(_result(), client)
+        assert str(exc_info.value) == "Hakem geçerli bir yanıt döndürmedi (biçim hatası)."
+        assert exc_info.value.debug  # ayrinti dolu (JSON parse hatasi + ham cikti)
 
     def test_schema_violation_raises(self):
         # auto_match verdict'inde matched_id eksik -> pydantic validator hata versin.
         payload = {"parent": {"verdict": "auto_match", "matched_id": None}}
         client = _FakeClient(json.dumps(payload))
-        with pytest.raises(JudgeValidationError):
+        with pytest.raises(JudgeValidationError) as exc_info:
             judge(_result(), client)
+        assert str(exc_info.value) == "Hakemin cevabı şemaya uymuyor (çelişkili/eksik alan)."
+        assert exc_info.value.debug
 
     def test_hallucinated_parent_id_raises(self):
         payload = {
@@ -286,8 +295,10 @@ class TestJudgeValidation:
             "subunit": None,
         }
         client = _FakeClient(json.dumps(payload))
-        with pytest.raises(JudgeValidationError):
+        with pytest.raises(JudgeValidationError) as exc_info:
             judge(_result(), client)
+        assert str(exc_info.value) == "Hakem geçersiz bir cevap verdi (bilinmeyen kurum kaydı)."
+        assert "UYDURMA_ID" in exc_info.value.debug  # ham id sadece debug'ta
 
     def test_hallucinated_subunit_id_raises(self):
         payload = {
@@ -295,8 +306,81 @@ class TestJudgeValidation:
             "subunit": {"verdict": "auto_match", "matched_id": "HAYALET_ID"},
         }
         client = _FakeClient(json.dumps(payload))
-        with pytest.raises(JudgeValidationError):
+        with pytest.raises(JudgeValidationError) as exc_info:
             judge(_result(), client)
+        assert str(exc_info.value) == "Hakem geçersiz bir cevap verdi (bilinmeyen alt-birim kaydı)."
+        assert "HAYALET_ID" in exc_info.value.debug
+
+    def test_subunit_from_different_parent_raises(self):
+        """2026-07-30 (kullanici karari - gate'teki ayni ilkenin judge tarafi):
+        hakem parent olarak X, subunit olarak GERCEKTE BASKA bir parent'a (Y)
+        ait bir kayit secerse tutarsiz - halusinasyonla ayni sinif, reddedilir."""
+        parents = [
+            ScoredCandidate(
+                id="58062", record_type="parent", name="Pécsi Tudományegyetem",
+                raw={"id": "58062"}, bm25_norm=1.0, cosine=0.9,
+                token_set_ratio=95.0, qualifier_conflict=False,
+            ),
+            ScoredCandidate(
+                id="99", record_type="parent", name="Baska Egyetem",
+                raw={"id": "99"}, bm25_norm=0.5, cosine=0.5,
+                token_set_ratio=80.0, qualifier_conflict=False,
+            ),
+        ]
+        subunits = [
+            ScoredCandidate(
+                id="900", record_type="subunit", name="Anesztezi Klinika",
+                # 58062 DEGIL - 99'a ait; parent_name gercek veride oldugu gibi
+                # subunit belgesine enjekte edilmis sekilde (bkz. document.py)
+                raw={"id": "900", "parent_id": "99", "parent_name": "Baska Egyetem"},
+                bm25_norm=1.0, cosine=0.9, token_set_ratio=95.0,
+                qualifier_conflict=False, exact_match=True,
+                exact_match_text="anesztezi klinika",
+            ),
+        ]
+        result = ResolveResult(
+            query="pécsi tudományegyetem anesztezi klinika", decomposed=_decomposed(),
+            parents=parents, subunits=subunits,
+        )
+        payload = {
+            "parent": {"verdict": "auto_match", "matched_id": "58062"},
+            "unit_phrase": "anesztezi klinika",
+            "subunit": {"verdict": "auto_match", "matched_id": "900"},
+        }
+        client = _FakeClient(json.dumps(payload))
+        with pytest.raises(JudgeValidationError) as exc_info:
+            judge(result, client)
+        # 2026-07-30 (kullanici karari): sabit/jenerik mesaj - sorgu basina
+        # degisken isim/id icermez (kisa, tutarli, log-dostu); ayrinti sadece
+        # `debug`'ta ("info butonu" - istege bagli gosterim).
+        assert str(exc_info.value) == "Hakem tutarsız bir cevap verdi (kurum/birim uyuşmazlığı)."
+        assert "Anesztezi Klinika" in exc_info.value.debug
+        assert "99" in exc_info.value.debug and "58062" in exc_info.value.debug
+
+    def test_subunit_dropped_when_parent_no_match(self):
+        """2026-07-30 (kullanici karari): parent no_match ise (kurum bilinmiyor),
+        subunit da bir KIMLIK oneremez - LLM 'review' dese ve bir aday gostermis
+        olsa bile matched_id None'a, verdict no_match'e cekilir (ikisi BIRLIKTE
+        degismeli - schema.py _matched_id_consistency, verdict!=no_match icin
+        matched_id'yi zorunlu kilar)."""
+        subunits = [
+            ScoredCandidate(
+                id="900", record_type="subunit", name="Bilgisayar Muhendisligi",
+                raw={"id": "900", "parent_id": "77"}, bm25_norm=1.0, cosine=0.9,
+                token_set_ratio=95.0, qualifier_conflict=False, exact_match=True,
+                exact_match_text="bilgisayar muhendisligi",
+            ),
+        ]
+        payload = {
+            "parent": {"verdict": "no_match", "matched_id": None},
+            "unit_phrase": "bilgisayar muhendisligi",
+            "subunit": {"verdict": "review", "matched_id": "900"},
+        }
+        client = _FakeClient(json.dumps(payload))
+        out = judge(_result(subunits=subunits), client)
+        assert out.parent.verdict == "no_match"
+        assert out.subunit.verdict == "no_match"
+        assert out.subunit.matched_id is None
 
 
 class TestMatchedIdNormalization:

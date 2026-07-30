@@ -158,12 +158,16 @@ def _decide_pool(
     exact = [c for c in candidates if _is_strong_exact(c)]
 
     if not exact:
+        # score_candidate: bu dalda hicbir aday guclu-exact degil (tanim geregi),
+        # bonus devreye girmez - ama nitelik celiskisi cezasi burada da uygulanmali
+        # (Dalga2 #10a: eskiden ham tsr/100 kullanilir, celiski cezasi atlanirdi).
+        conf = score_candidate(display)
         if best_tsr < floor_tsr * 100.0:
-            return GateDecision("no_match", None, _clamp01(best_tsr / 100.0),
+            return GateDecision("no_match", None, conf,
                                 _signals_of(display, reason="taban_alti"))
         # sinyal var ama exact degil (typo/kelime-sirasi/capraz-dil-alias-yok) ->
         # review (bkz. modul docstring'i: tsr-auto denenip birakildi, upstream isi).
-        return GateDecision("review", None, _clamp01(best_tsr / 100.0),
+        return GateDecision("review", None, conf,
                             _signals_of(display, reason="exact_yok"))
 
     # subunit: secilen parent'in altindakileri tercih et (varsa)
@@ -193,35 +197,51 @@ def _decide_pool(
 def _enforce_coherence(
     parent: GateDecision, subunit: GateDecision, subunit_pool: list[ScoredCandidate]
 ) -> GateDecision:
-    """Capraz-havuz tutarlilik: subunit, parent'tan daha EMIN olamaz.
+    """Capraz-havuz tutarlilik: subunit, parent'tan daha EMIN olamaz VE parent
+    kesinlesmeden bir KIMLIK onermez.
 
-    subunit `auto_match` YALNIZCA parent da `auto_match` VE secilen subunit gercekten
-    o parent'in ALTINDAysa gecerli kalir. Aksi halde "kurumu kesin bilmiyorum ama
-    alt-birimden eminim" tutarsizligi olusur - Dalga 0'da (50-sorgu DENEY seti) CANLI
-    gozlemlendi: #29 parent=review (matched_id=None) iken sub=auto hicbir parent'a
-    bagli degildi; #1 parent=ambiguous iken sub=auto secilen ikizi asiri-iddia
-    ediyordu. Bu durumda verdict `review`e cekilir; matched_id ONERI olarak KORUNUR
-    (atilmaz - decide/ ya da hakem degerlendirsin), gerekce signals'a yazilir.
+    subunit `matched_id` tasiyabilmesi YALNIZCA parent `auto_match` VE secilen
+    subunit gercekten o parent'in ALTINDAysa gecerlidir. Aksi halde (parent
+    auto_match degilse, ya da subunit'in kendi secimi BASKA bir parent'a
+    bagliysa) matched_id `None`'a cekilir - verdict `auto_match` idiyse
+    `review`e duser, zaten review/ambiguous idiyse KENDI verdict'i korunur
+    (sadece id atilir).
 
-    Diger subunit verdict'leri (review/ambiguous/no_match/none) zaten auto'dan zayif,
-    dokunulmaz. Not: bu YALNIZ kapama (down-cap); ters yon - guclu subunit'in belirsiz
-    parent'i NETLESTIRMESI (promosyon) - bilerek DISARIDA, o decide/ katmaninin isi."""
-    if subunit.verdict != "auto_match":
-        return subunit
-    under_parent = any(
+    Gerekce (2026-07-30, kullanici karari, genisletildi): bu katalogda bir
+    subunit kaydinin GERCEK kimligi (parent, ad) CIFTIDIR - ayni ad onlarca
+    farkli parent altinda BAGIMSIZ gercek kayit olarak tekrarlanabiliyor
+    (ör. "bilgisayar muhendisligi bolumu" x190, bkz. 01_gate.md C1). Parent
+    bilinmeden verilen bir id, N aday arasindan (N kac olursa olsun) bir
+    tahminden ibarettir - ne kadar "emin" gorunurse gorunsun (exact/ambiguous)
+    yanlis bir onceki adimin (parent) uzerine yanlis-kesin bir id insa eder.
+    Daha once (Dalga 0, 50-sorgu DENEY seti) CANLI gozlemlendi: #29 parent=review
+    iken sub=auto hicbir parent'a bagli degildi; #1 parent=ambiguous iken sub=auto
+    secilen ikizi asiri-iddia ediyordu - o zaman id ONERI olarak korunuyordu,
+    simdi tamamen atiliyor (subunit'in parent'i dogrulama/"promosyon" yapmasi
+    HICBIR katmanda kullanilmiyordu, bkz. asagidaki not - kaybedilen bir fayda
+    yok).
+
+    Not: bu YALNIZ kapama (down-cap); ters yon - guclu subunit'in belirsiz
+    parent'i NETLESTIRMESI (promosyon) - bilerek DISARIDA, o decide/ katmaninin
+    isi (ve bugun oradaki hicbir yerde de yapilmiyor)."""
+    if subunit.matched_id is None:
+        return subunit  # zaten oneri yok, dokunacak bir sey yok
+
+    under_parent = parent.verdict == "auto_match" and any(
         c.id == subunit.matched_id and c.raw.get("parent_id") == parent.matched_id
         for c in subunit_pool
     )
-    if parent.verdict == "auto_match" and under_parent:
+    if under_parent:
         return subunit
+
     return GateDecision(
-        verdict="review",
-        matched_id=subunit.matched_id,  # ONERI olarak korunur - atilmaz
+        verdict="review" if subunit.verdict == "auto_match" else subunit.verdict,
+        matched_id=None,
         confidence=subunit.confidence,
         signals={
             **subunit.signals,
             "reason": "parent_kesin_degil",
-            "capped_from": "auto_match",
+            "capped_from": subunit.verdict,
             "parent_verdict": parent.verdict,
         },
     )

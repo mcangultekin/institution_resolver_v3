@@ -182,6 +182,9 @@ def judge_cmd(
         verdict = run_judge(result, client)
     except (JudgeValidationError, LlmError) as exc:
         typer.echo(f"HAKEM HATASI: {exc}", err=True)
+        debug = getattr(exc, "debug", None)
+        if debug:
+            typer.echo(f"  detay: {debug}", err=True)
         raise typer.Exit(code=1) from None
     t2 = time.time()
 
@@ -233,6 +236,9 @@ def decide_cmd(
         d = run_decide(query, client, size=top)
     except (JudgeValidationError, LlmError) as exc:
         typer.echo(f"HAKEM HATASI: {exc}", err=True)
+        debug = getattr(exc, "debug", None)
+        if debug:
+            typer.echo(f"  detay: {debug}", err=True)
         raise typer.Exit(code=1) from None
     dt = time.time() - t0
 
