@@ -40,6 +40,8 @@ Girdi → NORMALIZE → ELASTICSEARCH (aday havuzu: parent + subunit)
 | Embedding metni | Agresif normalize DEĞİL — doğal metin (case+aksan), folding'i ES/model yapar. Agresif normalize sadece iç anahtar (merge/dedup/keyword-eşleşme) |
 | İndeks | **TEK index** + `record_type` filtresi (v2 iki-index IDF zehirlenmesini çözer) |
 | Retrieval | **Lexical-first** (BM25+fuzzy); kNN/embedding F3'te |
+| **Parent aramasında kanonik/alias ayrımı** (2026-07-30) | **AYRIM YOK.** Bütün yazımlar (kanonik ad + her alias) tek ortak havuzda, her biri ayrı nested belge (`alias_variants`, `score_mode: max`). `name` ve birleşik `aliases_text` parent aramasından **çıkarıldı** — ikisi ayrı kanal olarak dururken kanonik ad her ikisini birden ateşleyip skor topluyordu, yani yapısal ayrıcalığı vardı. Ölçüm (200 kurum, canlı): alias ile top1 %47→%84.5, top10 %70.5→%99.5, havuz dışı %11→%0.5; kanonik ad %98.5→%100; aradaki uçurum 51.5→15.5 puan. **Subunit kapsam dışı** (`aliases_text` ile aranmaya devam eder). Ayrıntı ve ara varyantların ölçümleri: `search.py` `_alias_variants_clause` docstring'i |
+| **Gate: parent'ta çoklu exact** (2026-07-30) | Parent havuzunda **birden fazla** güçlü exact varsa `auto_match` **verilmez** (`ambiguous`, reason `coklu_exact_herhangi`) — span farkına bakılmaz. Subunit'te eski kural (yalnız eşit-uzun rakip engeller) korunur. Ölçülen bedel (benchmark ilk 150 sorgu): 5 karar (%3.3) auto→ambiguous, hakeme giden sorgu +%2.0 (3 sorgu; 2'si zaten gidiyordu), 1 subunit kararı `_enforce_coherence` üzerinden review'e çekildi. Bu kural **hata önlemiyor**, "şüpheli auto yerine belirsizlik" risk tercihini uyguluyor — 5 vakada bugünkü seçim doğru görünüyordu (jenerik alt-parça rakipleri: `İSTANBUL ÜNİVERSİTESİ-CERRAHPAŞA` vs `İSTANBUL ÜNİVERSİTESİ`) |
 | **Açık kararlar** (F4'e kadar ertelendi) | (a) LLM auto'ya terfi edebilir mi? — önerim: hayır, LLM düşürür, deterministik kanıt yükseltir. (b) İÖ sert-merge mi yumuşak-tercih mi. (c) Batch ölçeği/bütçe |
 
 ## Durum — build order
@@ -263,6 +265,39 @@ hakem "havuzda doğru yok" dediğinde ikinci-tur parent'sız birim araması
 (fallback) daha hedefli bir çözüm olabilir — F4 sonrası değerlendirilecek.
 
 ### Açık kararlar (henüz verilmedi)
+- **Çok-kurumlu tek kayıt — kaynak veri defekti (bulundu 2026-07-30, ERTELENDİ):**
+  Tek bir parent kaydı, birbirinden bağımsız kurumların adlarını alias olarak
+  taşıyor. Kanıt: id=810 `Ministerio de Salud` (CR) içinde `Sağlık Bakanlığı`,
+  `Ontario Ministry of Health`, `Uganda Ministry of Health`, `Kementerian
+  Kesihatan Malaysia` …; id=11875 `Ministry of Justice` (ME) içinde `Adalet
+  Bakanlığı` ve `Ministerstvo spravedlnosti České republiky`.
+  **Bizim pipeline'ımızda oluşmuyor:** ham `data/raw/institution_parent.csv`
+  id=810 satırında 82 alias zaten böyle geliyor (57'si `source: ror`),
+  `legacy_institution_ids: []` — birleştirme bizde değil, kaynakta.
+  **Sadece bakanlıklarda değil** — aynı desen hastanelerde (`St. Francis
+  Hospital` US, `St Mary's Hospital` JP, `St. Luke's Hospital` US), şirketlerde
+  (`HSBC`), üniversitelerde (`National University of Science and Technology` OM)
+  ve akronim kayıtlarında (`SRC`, `SRI`, `(ISC)²`) da var. Ortak nokta bakanlık
+  olmak değil, adın tek başına kimlik belirtmemesi.
+  **Tespit için kullanılabilir kanıt (sözlük/eşik gerektirmez):** verinin kendi
+  `locale` etiketi — aynı dil altında birden fazla FARKLI ad. Meşru çok-dilli
+  kayıtta her dile bir ad düşer (University of Vienna: 0 çakışma), çökmüş
+  kayıtta yığılır. Dağılım: bir dilde 2 ad 20.090 kayıt (çoğu meşru: eski ad /
+  yazım varyantı), 3 ad 2.715, 4 ad 177, 5+ ad 14. Eşik SEÇİLMEDİ — kesim
+  kullanıcı kararı.
+  **Etkisi (ölçüldü):** alias arama kanalı (2026-07-30) bu kayıtları havuzda
+  görünür yaptı; eskiden birleşik `aliases_text`in uzunluk normu onları
+  gömüyordu. Sonuç: `SAĞLIK BAKANLIĞI` → `auto_match` Ministerio de Salud (CR),
+  `İçişleri Bakanlığı Göç İdaresi` → `auto_match` Ministry of the Interior (EE);
+  ikisi de gold'da `no_match`. Benchmark'ta gold `no_match` doğruluğu 8/39 → 7/39.
+  Bunlar gate'ten auto çıktığı için **hakem hiç görmüyor**.
+  **Denenip BIRAKILAN yaklaşımlar (tekrar denenmesin):** (a) "çok alias taşıyan
+  kayıt" vekili — eşik keyfi, University of Vienna gibi meşru kayıtları
+  işaretliyor; (b) ayırt edici token paylaşımına göre "kopuk aile" sayısı — meşru
+  çeviriler de kopuk çıkıyor (Belarusian State Technological University); (c)
+  korpustan öğrenilen ülke/şehir belirteci — dil kelimeleri (`della`, `conseil`,
+  `universität`) yer belirteci sanılıyor, frekansla ayrılmıyor (`della` df=48 vs
+  `uganda` df=56). Kullanıcı kararı: sözlük/eşik tabanlı sezgisel yaklaşım YOK.
 - **Çapraz-kaynak parent ikizleri (ölçüldü 2026-07-23, ERTELENDİ — F5/batch ÖNCESİ şart):**
   ~270 grup YÖK↔ROR aynı-alias parent çifti (ör. SBÜ 49 ↔ University of Health
   Sciences 8701; Bartın 243↔68525). Bir kısmı SAHTE ikiz (Polis Akademisi TR ↔
