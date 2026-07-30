@@ -53,6 +53,9 @@ def setup_es_cmd() -> None:
 def index_cmd(
     processed_dir: Path = typer.Option("data/processed", "--processed-dir"),
     embeddings: bool = typer.Option(False, "--embeddings", help="e5 vektorlerini de uret+yukle (F3)"),
+    recreate: bool = typer.Option(
+        False, "--recreate", help="mevcut index'i SIL, sifirdan kur (varsayilan: uzerine yukle)"
+    ),
 ) -> None:
     """Kanonik JSONL'leri ES'e yukler + force-merge (determinizm)."""
     from institution_resolver_v3.elastic.indexer import index_data
@@ -61,6 +64,7 @@ def index_cmd(
         processed_dir / "parent_canonical.jsonl",
         processed_dir / "subunit_canonical.jsonl",
         with_embeddings=embeddings,
+        recreate=recreate,
     )
     typer.echo(f"index={res['index']}  yuklendi={res['indexed']}  hata={len(res['errors'])}")
     typer.echo(f"  parent={res['parents']}  subunit={res['subunits']}")

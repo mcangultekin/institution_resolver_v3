@@ -15,10 +15,37 @@ import pytest
 
 from institution_resolver_v3.judge.candidates import build_candidate_views
 from institution_resolver_v3.judge.client import OllamaClient
-from institution_resolver_v3.judge.judge import JudgeValidationError, judge
+from institution_resolver_v3.judge.judge import JudgeValidationError, _decision_schema, judge
 from institution_resolver_v3.judge.prompt import build_prompt
 from institution_resolver_v3.retrieve.decompose import BoundaryHypothesis, DecomposedQuery
 from institution_resolver_v3.retrieve.resolve import ResolveResult, ScoredCandidate
+
+
+def test_decision_schema_empty_choices_forces_no_match() -> None:
+    """J2: aday havuzu bossa uretim semasi TEK secenek sunmali (no_match) -
+    model 'auto_match' gibi baska bir sey fiziksel olarak secemesin."""
+    schema = _decision_schema([])
+    assert schema["properties"]["verdict"] == {"const": "no_match"}
+    assert schema["properties"]["matched_id"] == {"type": "null"}
+    assert "anyOf" not in schema
+
+
+def test_decision_schema_with_choices_couples_verdict_and_id() -> None:
+    """J1: verdict/matched_id capraz-kisiti uretim semasina kodlanmali -
+    {"verdict":"auto_match","matched_id":null} gibi celiskili bir kombinasyon
+    iki ayri dal disinda temsil EDILEMEMELI."""
+    schema = _decision_schema(["P1|Gazi Universitesi"])
+    assert "anyOf" in schema and len(schema["anyOf"]) == 2
+
+    no_match_branch = next(
+        b for b in schema["anyOf"] if b["properties"]["verdict"] == {"const": "no_match"}
+    )
+    assert no_match_branch["properties"]["matched_id"] == {"type": "null"}
+
+    matched_branch = next(b for b in schema["anyOf"] if b is not no_match_branch)
+    assert matched_branch["properties"]["verdict"] == {"enum": ["auto_match", "review", "ambiguous"]}
+    assert matched_branch["properties"]["matched_id"] == {"enum": ["P1|Gazi Universitesi"]}
+    assert "no_match" not in matched_branch["properties"]["verdict"]["enum"]
 
 
 def _decomposed() -> DecomposedQuery:

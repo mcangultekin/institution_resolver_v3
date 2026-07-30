@@ -34,47 +34,63 @@ def _compute_embeddings(
     records: list[dict[str, Any]],
     parent_names: dict[str, str],
     cache_path: str | Path | None = None,
-) -> list[list[float]]:
-    """Tum kayitlar icin embed metni uret + encode et (MPS). Sira korunur.
+) -> dict[str, list[float]]:
+    """Tum kayitlar icin embed metni uret + encode et (MPS).
 
-    Disk cache: `cache_path` (npz) varsa ve id'ler AYNI sirayla eslesiyorsa
-    yeniden encode etmez (23 dk'lik encode'u tekrarlamamak icin - ES bulk
-    timeout'unda kaybolmasin).
+    Donus: `{"{record_type}:{id}": vektor}` - `_actions`'in `_id` icin
+    kullandigi AYNI composite key (parent ve subunit id uzaylari 55.431
+    kayitta CAKISIYOR, ham id tek basina guvenli anahtar degil). Vektor<->
+    belge eslemesi boylece POZISYONA degil kimlige bagli olur (bkz. E5).
+
+    Disk cache: `cache_path` (npz) varsa, id listesi AYNI sirayla eslesiyor
+    VE embed metinlerinin hash'i ayniysa yeniden encode etmez (23 dk'lik
+    encode'u tekrarlamamak icin). Sadece id'ye bakmak yetmez: embed metni
+    parent adina da bagli (subunit metnine parent adi enjekte edilir) - id
+    degismeden parent adi duzelirse metin degisir, o zaman cache BAYAT kalir
+    (bkz. 03_elastic_ve_embedding.md E4). Eski (hash'siz) cache dosyalari
+    guvenilmez sayilir, bir kereligine yeniden hesaplanir.
     """
+    import hashlib
+
     import numpy as np
 
     from institution_resolver_v3.embedding.encoder import encode_texts
     from institution_resolver_v3.embedding.text_builder import build_embed_text
 
     ids = [r["id"] for r in records]
+    keys = [f"{r['record_type']}:{r['id']}" for r in records]
+    texts = [build_embed_text(r, parent_names) for r in records]
+    text_hash = hashlib.sha256("\n".join(texts).encode("utf-8")).hexdigest()
+
     if cache_path and Path(cache_path).exists():
         data = np.load(cache_path, allow_pickle=True)
-        if list(data["ids"]) == ids:
-            return data["vecs"].tolist()
+        cached_hash = str(data["text_hash"]) if "text_hash" in data.files else None
+        if list(data["ids"]) == ids and cached_hash == text_hash:
+            return dict(zip(keys, data["vecs"].tolist()))
 
-    texts = [build_embed_text(r, parent_names) for r in records]
     vecs = encode_texts(texts)
     if cache_path:
-        np.savez(cache_path, ids=np.array(ids, dtype=object), vecs=vecs)
-    return [v.tolist() for v in vecs]
+        np.savez(cache_path, ids=np.array(ids, dtype=object), vecs=vecs, text_hash=text_hash)
+    return dict(zip(keys, (v.tolist() for v in vecs)))
 
 
 def _actions(
     parents: list[dict[str, Any]],
     subunits: list[dict[str, Any]],
     index: str,
-    embeddings: list[list[float]] | None = None,
+    embeddings: dict[str, list[float]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     parent_names = build_parent_name_index(parents)
     records = parents + subunits
-    for i, rec in enumerate(records):
+    for rec in records:
         doc = build_document(rec, parent_names)
-        if embeddings is not None:
-            doc["embedding"] = embeddings[i]
         # KRITIK: parent ve subunit id uzaylari ORTUSUYOR (55.431 ortak id).
         # record_type oneki olmadan _id cakisir, kayitlar birbirini ezer.
         # Gercek id `_source.id`'de korunur (arama onu doner, _id'yi degil).
-        yield {"_index": index, "_id": f"{rec['record_type']}:{rec['id']}", "_source": doc}
+        doc_id = f"{rec['record_type']}:{rec['id']}"
+        if embeddings is not None:
+            doc["embedding"] = embeddings[doc_id]  # KeyError = acik hata, sessiz yanlis eslesme degil
+        yield {"_index": index, "_id": doc_id, "_source": doc}
 
 
 def index_data(
@@ -83,11 +99,17 @@ def index_data(
     *,
     client: Elasticsearch | None = None,
     index: str | None = None,
-    recreate: bool = True,
+    recreate: bool = False,
     chunk_size: int = 2000,
     with_embeddings: bool = False,
 ) -> dict[str, Any]:
-    """JSONL'leri ES'e yukler. Doner: {indexed, errors, index}."""
+    """JSONL'leri ES'e yukler. Doner: {indexed, errors, index}.
+
+    `recreate=False` varsayilan: var olan index SILINMEZ, uzerine yuklenir
+    (`create_index` index yoksa olusturur). Sifirdan kurmak icin bilerek
+    `recreate=True` gecilmeli - varsayilanin `True` olmasi, veri yuklemek
+    icin cagrilan bu fonksiyonun yanlislikla uretim index'ini silmesine yol
+    aciyordu (bkz. 03_elastic_ve_embedding.md E6)."""
     client = client or get_client()
     cfg = es_config()
     index = index or cfg["index"]

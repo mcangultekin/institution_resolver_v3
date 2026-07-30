@@ -30,6 +30,13 @@ from institution_resolver_v3.retrieve.resolve import ResolveResult
 _VERDICTS = ["auto_match", "review", "ambiguous", "no_match"]
 
 
+_NO_MATCH_BRANCH: dict = {
+    "type": "object",
+    "properties": {"verdict": {"const": "no_match"}, "matched_id": {"type": "null"}},
+    "required": ["verdict", "matched_id"],
+}
+
+
 def _decision_schema(choices: list[str]) -> dict:
     """Tek bir karar blogu (parent ya da subunit) icin kisitli JSON semasi.
 
@@ -41,15 +48,31 @@ def _decision_schema(choices: list[str]) -> dict:
     isimle BAGLAMIYOR) uretim asamasinda engellenir: deger, adayin ADINI da
     icerdigi icin secim ismin semantigine kilitlenir. `_validate_ids` yine de
     kalir (kusak + pantolon askisi - sema destegi olmayan bir client enjekte
-    edilirse tek koruma o)."""
-    matched: dict = (
-        {"anyOf": [{"enum": choices}, {"type": "null"}]} if choices else {"type": "null"}
-    )
-    return {
+    edilirse tek koruma o).
+
+    `verdict` ve `matched_id` BAGIMSIZ iki soru DEGIL - capraz-alan kisiti
+    (J1/J2, 05_judge_ve_decide.md) burada semaya kodlanir: eskiden ikisi ayri
+    ayri sorulup {"verdict":"auto_match","matched_id":null} gibi celiskili bir
+    cikti model tarafindan URETILEBILIYORDU (pydantic sonradan reddediyordu,
+    ama LLM cagrisi zaten harcanmis, retry de yok - sorgu tumden basarisiz
+    oluyordu). Simdi tek bir "hangi karar + hangi kayit" secimi sunuluyor:
+    ya "eslesme yok" (id otomatik bos) ya da "su id ile su karar" (ikisi
+    birlikte kilitli) - ucuncu, tutarsiz bir kombinasyon uretim asamasinda
+    imkansiz."""
+    if not choices:
+        # J2: aday havuzu bossa tek gecerli cikti no_match - baska hicbir
+        # sey (auto_match/review/ambiguous) secilemez.
+        return _NO_MATCH_BRANCH
+
+    matched_branch = {
         "type": "object",
-        "properties": {"verdict": {"enum": _VERDICTS}, "matched_id": matched},
+        "properties": {
+            "verdict": {"enum": [v for v in _VERDICTS if v != "no_match"]},
+            "matched_id": {"enum": choices},
+        },
         "required": ["verdict", "matched_id"],
     }
+    return {"anyOf": [_NO_MATCH_BRANCH, matched_branch]}
 
 
 def _choice(v: CandidateView) -> str:
