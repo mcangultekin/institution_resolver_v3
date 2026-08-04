@@ -34,13 +34,18 @@ def _compute_embeddings(
     records: list[dict[str, Any]],
     parent_names: dict[str, str],
     cache_path: str | Path | None = None,
-) -> dict[str, list[float]]:
-    """Tum kayitlar icin embed metni uret + encode et (MPS).
+) -> tuple[list[str], np.ndarray]:
+    """Tum kayitlar icin embed metni uret + encode et (MPS/CUDA).
 
-    Donus: `{"{record_type}:{id}": vektor}` - `_actions`'in `_id` icin
-    kullandigi AYNI composite key (parent ve subunit id uzaylari 55.431
-    kayitta CAKISIYOR, ham id tek basina guvenli anahtar degil). Vektor<->
-    belge eslemesi boylece POZISYONA degil kimlige bagli olur (bkz. E5).
+    Donus: `(keys, vecs)` - `keys[i]` satirinin composite kimligi (`_actions`'in
+    `_id` icin kullandigi AYNI `{record_type}:{id}` formati; parent ve subunit
+    id uzaylari 55.431 kayitta CAKISIYOR, ham id tek basina guvenli anahtar
+    degil), `vecs[i]` o kimligin vektoru. Numpy dizisi olarak dondurulur -
+    TUMU Python float listesine ceviremeyiz: 231K kayitta bu donusum ~5GB'a
+    mal oluyor (Colab'da OOM, canli dogrulandi 2026-08-04 - `inres3 index`
+    tek basina 8.65GB RSS'e cikip hem kendisi hem ES ayni OOM'da olduruldu).
+    Cagiran taraf ihtiyaci olan SATIRI (`_actions`) teker teker `.tolist()`'e
+    cevirir, hepsi ayni anda bellekte durmaz.
 
     Disk cache: `cache_path` (npz) varsa, id listesi AYNI sirayla eslesiyor
     VE embed metinlerinin hash'i ayniysa yeniden encode etmez (23 dk'lik
@@ -66,22 +71,27 @@ def _compute_embeddings(
         data = np.load(cache_path, allow_pickle=True)
         cached_hash = str(data["text_hash"]) if "text_hash" in data.files else None
         if list(data["ids"]) == ids and cached_hash == text_hash:
-            return dict(zip(keys, data["vecs"].tolist()))
+            return keys, data["vecs"]
 
     vecs = encode_texts(texts)
     if cache_path:
         np.savez(cache_path, ids=np.array(ids, dtype=object), vecs=vecs, text_hash=text_hash)
-    return dict(zip(keys, (v.tolist() for v in vecs)))
+    return keys, vecs
 
 
 def _actions(
     parents: list[dict[str, Any]],
     subunits: list[dict[str, Any]],
     index: str,
-    embeddings: dict[str, list[float]] | None = None,
+    embeddings: tuple[list[str], np.ndarray] | None = None,
 ) -> Iterator[dict[str, Any]]:
     parent_names = build_parent_name_index(parents)
     records = parents + subunits
+    key_to_row = None
+    emb_vecs = None
+    if embeddings is not None:
+        emb_keys, emb_vecs = embeddings
+        key_to_row = {k: i for i, k in enumerate(emb_keys)}
     for rec in records:
         doc = build_document(rec, parent_names)
         # KRITIK: parent ve subunit id uzaylari ORTUSUYOR (55.431 ortak id).
@@ -89,7 +99,9 @@ def _actions(
         # Gercek id `_source.id`'de korunur (arama onu doner, _id'yi degil).
         doc_id = f"{rec['record_type']}:{rec['id']}"
         if embeddings is not None:
-            doc["embedding"] = embeddings[doc_id]  # KeyError = acik hata, sessiz yanlis eslesme degil
+            # KeyError = acik hata, sessiz yanlis eslesme degil. Sadece bu
+            # SATIR simdi listeye cevrilir (hepsi birden degil, bkz. yukari).
+            doc["embedding"] = emb_vecs[key_to_row[doc_id]].tolist()
         yield {"_index": index, "_id": doc_id, "_source": doc}
 
 

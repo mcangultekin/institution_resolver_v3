@@ -32,11 +32,12 @@ def test_cache_reused_when_ids_and_text_identical(tmp_path, monkeypatch):
     records = [{"id": "1", "record_type": "parent", "name": "GAZI UNIVERSITESI", "aliases": []}]
     cache = tmp_path / "embeddings.npz"
 
-    v1 = indexer_mod._compute_embeddings(records, {}, cache_path=cache)
-    v2 = indexer_mod._compute_embeddings(records, {}, cache_path=cache)
+    v1_keys, v1_vecs = indexer_mod._compute_embeddings(records, {}, cache_path=cache)
+    v2_keys, v2_vecs = indexer_mod._compute_embeddings(records, {}, cache_path=cache)
 
     assert len(calls) == 1, "ikinci cagri cache'ten gelmeli, encode tekrar cagrilmamali"
-    assert v1 == v2
+    assert v1_keys == v2_keys
+    assert np.array_equal(v1_vecs, v2_vecs)
 
 
 def test_cache_invalidated_when_text_changes_with_same_ids(tmp_path, monkeypatch):
@@ -67,15 +68,16 @@ def test_old_cache_format_without_hash_is_treated_as_stale(tmp_path, monkeypatch
 
     np.savez(cache, ids=np.array(["1"], dtype=object), vecs=np.array([[99.0]]))  # eski format, text_hash yok
 
-    v = indexer_mod._compute_embeddings(records, {}, cache_path=cache)
+    keys, vecs = indexer_mod._compute_embeddings(records, {}, cache_path=cache)
 
     assert len(calls) == 1, "eski formatli cache guvenilmemeli, yeniden hesaplanmali"
-    assert v["parent:1"] != [99.0], "eski (bayat) cache degeri donulmemeliydi"
+    assert vecs[keys.index("parent:1")].tolist() != [99.0], "eski (bayat) cache degeri donulmemeliydi"
 
 
-def test_compute_embeddings_returns_dict_keyed_by_composite_id(tmp_path, monkeypatch):
-    """E5: parent ve subunit id uzaylari cakisabilir (ayni '7'). Sonuc bir
-    dict olmali, anahtar `record_type:id` - pozisyon/sira onemsiz."""
+def test_compute_embeddings_returns_vectors_keyed_by_composite_id(tmp_path, monkeypatch):
+    """E5: parent ve subunit id uzaylari cakisabilir (ayni '7'). Sonuc
+    `(keys, vecs)` olmali, `keys[i]` `record_type:id` formatinda - pozisyon/sira
+    onemsiz, satir kimlige gore bulunur."""
     calls: list[list[str]] = []
     monkeypatch.setattr("institution_resolver_v3.embedding.encoder.encode_texts", _fake_encode(calls))
     records = [
@@ -83,19 +85,21 @@ def test_compute_embeddings_returns_dict_keyed_by_composite_id(tmp_path, monkeyp
         {"id": "7", "record_type": "subunit", "parent_id": "7", "name": "BB", "aliases": []},
     ]
 
-    out = indexer_mod._compute_embeddings(records, {"7": "AAAAAAAAAA"}, cache_path=tmp_path / "e.npz")
+    keys, vecs = indexer_mod._compute_embeddings(records, {"7": "AAAAAAAAAA"}, cache_path=tmp_path / "e.npz")
 
-    assert set(out.keys()) == {"parent:7", "subunit:7"}
-    assert out["parent:7"] != out["subunit:7"]  # farkli metinler -> farkli (sahte) vektorler
+    assert set(keys) == {"parent:7", "subunit:7"}
+    i_parent, i_subunit = keys.index("parent:7"), keys.index("subunit:7")
+    assert vecs[i_parent].tolist() != vecs[i_subunit].tolist()  # farkli metinler -> farkli (sahte) vektorler
 
 
 def test_actions_matches_embeddings_by_composite_key_not_position():
-    """E5: `_actions` artik `embeddings[i]` (pozisyon) DEGIL, `embeddings[doc_id]`
-    (composite key) kullanmali. Parent ve subunit'in AYNI raw id'yi (7)
-    tasidigi - projede gercekten olan - kritik senaryo."""
+    """E5: `_actions` `embeddings[i]` (pozisyon) DEGIL, kimlige (composite key)
+    gore satir bulmali. Parent ve subunit'in AYNI raw id'yi (7) tasidigi -
+    projede gercekten olan - kritik senaryo."""
     parents = [{"id": "7", "record_type": "parent", "name": "A"}]
     subunits = [{"id": "7", "record_type": "subunit", "parent_id": "7", "name": "B"}]
-    embeddings = {"subunit:7": [9.0], "parent:7": [1.0]}  # dict sirasi bilerek 'ters'
+    # keys sirasi bilerek 'ters': ilk key subunit, ikinci parent
+    embeddings = (["subunit:7", "parent:7"], np.array([[9.0], [1.0]]))
 
     docs = list(indexer_mod._actions(parents, subunits, "idx", embeddings))
 
