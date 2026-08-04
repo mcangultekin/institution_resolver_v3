@@ -167,13 +167,22 @@ def run_decide_batch(
     limit: int | None = None,
     resume: bool = False,
     on_progress: ProgressFn | None = None,
+    max_workers: int = 1,
 ) -> dict[str, Any]:
-    """`queries`'i tek tek decide()'dan gecirip `out_path`'e (CSV) yazar (hibrit:
-    gate auto_match vermezse LLM devreye girer)."""
+    """`queries`'i decide()'dan gecirip `out_path`'e (CSV) yazar (hibrit:
+    gate auto_match vermezse LLM devreye girer). `max_workers>1`: LLM'e dusen
+    satirlar es-zamanli cagrilir (bkz. csv_runner.run_csv_batch docstring)."""
 
     def _proc(query: str) -> dict[str, str]:
         return process_one_decide(query, client, decide_fn=decide_fn, top=top)
 
     return run_csv_batch(
-        queries, out_path, FIELDNAMES, _proc, limit=limit, resume=resume, on_progress=on_progress
+        queries,
+        out_path,
+        FIELDNAMES,
+        _proc,
+        limit=limit,
+        resume=resume,
+        on_progress=on_progress,
+        max_workers=max_workers,
     )

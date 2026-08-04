@@ -23,8 +23,9 @@ def run_csv_batch(
     limit: int | None = None,
     resume: bool = False,
     on_progress: ProgressFn | None = None,
+    max_workers: int = 1,
 ) -> dict[str, Any]:
-    """`queries`'i tek tek `process_one`'a verip `out_path`'e (CSV) yazar; ozet doner.
+    """`queries`'i `process_one`'a verip `out_path`'e (CSV) yazar; ozet doner.
 
     `resume=True`: cikti dosyasi varsa, basligi `fieldnames`'e uymuyorsa
     `ValueError` (sessiz kolon kaymasini onler); uyuyorsa icindeki her 'query'
@@ -34,7 +35,15 @@ def run_csv_batch(
     saymaz - aksi halde resume+limit birlikte hic ilerlemez (onceki hata,
     bkz. 00_OZET.md T4). `process_one` tek argumanla (query) cagrilir -
     client/resolve_fn/vb. cagiran tarafin closure'inda kalir (bkz.
-    batch.py/gate_batch.py/decide_batch.py run_* fonksiyonlari)."""
+    batch.py/gate_batch.py/decide_batch.py run_* fonksiyonlari).
+
+    `max_workers>1`: deney (2026-08-04, LLM hakem batch'inde ardisik cagrinin
+    darbogaz olup olmadigini olcmek icin) - `process_one` bir ThreadPoolExecutor
+    havuzunda es-zamanli cagrilir (LLM/ES cagrilari IO-bound; paylasilan
+    httpx.Client thread-safe). CSV'ye yazim tek kilitle serilestirilir, satir
+    SIRASI garanti degildir (resume 'query' metnine gore sayar, pozisyona
+    degil - bu yuzden guvenli). `on_progress`'e gecen `count` gonderim sirasidir,
+    tamamlanma sirasi degil."""
     out_path = Path(out_path)
     done_counts: Counter[str] = Counter()
     existing = resume and out_path.exists() and out_path.stat().st_size > 0
@@ -49,30 +58,50 @@ def run_csv_batch(
                 )
             done_counts.update(r["query"] for r in reader)
 
-    n_ok = n_err = n_skip = 0
-    processed = 0
+    to_process: list[tuple[int, str]] = []
+    n_skip = 0
+    for count, query in enumerate(queries, start=1):
+        if done_counts[query] > 0:
+            done_counts[query] -= 1
+            n_skip += 1
+            continue
+        if limit is not None and len(to_process) >= limit:
+            break
+        to_process.append((count, query))
+
+    n_ok = n_err = 0
     mode = "a" if existing else "w"
     with out_path.open(mode, newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         if not existing:
             writer.writeheader()
-        for count, query in enumerate(queries, start=1):
-            if done_counts[query] > 0:
-                done_counts[query] -= 1
-                n_skip += 1
-                continue
-            if limit is not None and processed >= limit:
-                break
-            rec = process_one(query)
+
+        def _write(count: int, query: str, rec: dict[str, str]) -> None:
+            nonlocal n_ok, n_err
             writer.writerow(rec)
             f.flush()  # progressive: cokme-guvenli
-            processed += 1
             if rec["status"] == "ok":
                 n_ok += 1
             else:
                 n_err += 1
             if on_progress is not None:
                 on_progress(count, query, rec)
+
+        if max_workers <= 1:
+            for count, query in to_process:
+                _write(count, query, process_one(query))
+        else:
+            import threading
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            write_lock = threading.Lock()
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(process_one, q): (count, q) for count, q in to_process}
+                for fut in as_completed(futures):
+                    count, query = futures[fut]
+                    rec = fut.result()
+                    with write_lock:
+                        _write(count, query, rec)
 
     return {
         "ok": n_ok,

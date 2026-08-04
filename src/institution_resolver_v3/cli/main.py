@@ -322,6 +322,9 @@ def decide_batch_cmd(
     resume: bool = typer.Option(False, "--resume", help="cikti varsa kaldigi yerden devam"),
     model: str = typer.Option(None, "--model", help="Ollama model tag (varsayilan: config judge.model)"),
     top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+    workers: int = typer.Option(
+        1, "--workers", help="LLM'e dusen satirlar icin es-zamanli isci sayisi (deney, varsayilan sirali)"
+    ),
 ) -> None:
     """Hibrit batch: once gate (LLM'siz), auto_match vermezse sorgunun tamami
     LLM'e devredilir (bkz. decide/decide.py, eval/decide_batch.py). Cikti
@@ -367,7 +370,14 @@ def decide_batch_cmd(
         err=True,
     )
     summary = run_decide_batch(
-        _queries(), client, out, limit=limit, resume=resume, top=top, on_progress=_progress
+        _queries(),
+        client,
+        out,
+        limit=limit,
+        resume=resume,
+        top=top,
+        on_progress=_progress,
+        max_workers=workers,
     )
     typer.echo(
         f"\nBITTI: ok={summary['ok']}  hata={summary['error']}  atlandi={summary['skipped']}"
