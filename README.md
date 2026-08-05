@@ -40,6 +40,7 @@ SORGU:
 | Yol | Ne |
 |---|---|
 | `src/institution_resolver_v3/` | paket: `ingest/ normalize/ embedding/ elastic/ retrieve/ gate/ judge/ decide/ eval/ api/ cli/` |
+| `src/institution_resolver_v3/parent_only/` | **yalniz-kurum modu** — yanda duran ikinci mod ([README](src/institution_resolver_v3/parent_only/README.md)) |
 | `config/default.yaml` | tum ayarlar (ES, retrieval, embedding, gate, judge, decision) |
 | `config/docker.yaml` | container ici host adlari (`INRES3_CONFIG` ile secilir) |
 | `data/raw/` | ham `institution_parent.csv` / `institution_subunit.csv` (versiyonlanmaz) |
@@ -129,6 +130,16 @@ inres3-serve            # ya da: docker compose up -d api
 
 Yuklenen CSV'ler ve ciktilar `data/jobs/` altinda tutulur (kullanici verisi,
 versiyonlanmaz).
+
+## Parent-only mod (yalniz kurum)
+
+Ciktidan subunit'i tamamen cikaran, cekirdegin **yaninda** duran ikinci bir mod:
+`inres3-parent` CLI ve `inres3-parent-serve` (port 8001, ayri import agaci).
+Gate parent karari cekirdekle birebir ayni (460/460), LLM'e dusen satir
+%57.6 -> %38.3, uctan uca ~35 s -> ~7 s/satir.
+
+Bagimlilik tek yonlu: cekirdekte bu pakete giden referans yok.
+Ayrinti: [`src/institution_resolver_v3/parent_only/README.md`](src/institution_resolver_v3/parent_only/README.md).
 
 ## Ayarlar
 
