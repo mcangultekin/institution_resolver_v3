@@ -8,5 +8,4 @@ Icerik (v2'den tasindi, test-kilitli):
                       normalize() (base + base_no_accent), expand_query_text()
 - abbreviations.py  : veri-dogrulanmis kisaltma sozlugu (uni.->universitesi, PR.->PROGRAMI)
 - qualifiers.py     : tezli/tezsiz/(YL)/(DR)/(IO)/derece cikarimi + celiski kurali
-- text_eski.py      : [ESKI] ilk deneme, kullanilmiyor (query_pipeline supersede etti)
 """
