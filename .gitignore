@@ -32,6 +32,15 @@ data/eval/gold_kuyruk_*.csv
 # API batch job girdi/ciktilari (kullanici verisi, bkz. api/routers/batch.py)
 data/jobs/
 
+# Kosu ciktilari: batch/probe CSV'leri + loglar. Bunlar da sorgu metnini satir
+# satir tasiyor (ayni kisisel veri) - deney sonuclari docs/RAPOR_*.md'de ozetlenir.
+output/
+# CLI varsayilan cikti adlari repo koküne duser (bkz. cli/main.py --out)
+/batch_sonuc.csv
+/gate_batch_sonuc.csv
+/decide_batch_sonuc.csv
+*_sonuc.csv
+
 # LLM cache + sirlar
 .env
 *.cache

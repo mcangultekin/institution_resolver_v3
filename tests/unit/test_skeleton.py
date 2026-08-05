@@ -27,8 +27,10 @@ def test_models_schema() -> None:
 
 
 def test_turkish_fold() -> None:
-    from institution_resolver_v3.normalize.text_eski import fold_turkish
+    from institution_resolver_v3.normalize.query_pipeline import normalize
 
-    # I/i tuzagi: "TIP" ile "tip" ayni ASCII-fold'a duser ama Python .lower()
-    # bozuk bilesik uretmez.
-    assert fold_turkish("GAZİ  ÜNİVERSİTESİ") == "gazi universitesi"
+    # I/i tuzagi: Python'in yerlesik .lower()'i "İ" icin bozuk bilesik uretir
+    # ("i" + U+0307); locale-bilincli yol tek kod noktasi vermeli.
+    n = normalize("GAZİ  ÜNİVERSİTESİ")
+    assert n.base == "gazi üniversitesi"
+    assert n.base_no_accent == "gazi universitesi"
