@@ -21,6 +21,10 @@ api = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "python-multipart>=0.0.9"]  
 [project.scripts]
 inres3 = "institution_resolver_v3.cli.main:app"
 inres3-serve = "institution_resolver_v3.api.app:run"
+# parent-only mod (yalniz kurum) - AYRI giris noktasi: `inres3` ile ayni import
+# agacini paylasmaz, bu yuzden orada bir hata `inres3`u etkilemez (2026-08-04).
+inres3-parent = "institution_resolver_v3.parent_only.cli:app"
+inres3-parent-serve = "institution_resolver_v3.parent_only.api:run"
 
 [build-system]
 requires = ["setuptools>=68"]
