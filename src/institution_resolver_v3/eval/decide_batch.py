@@ -36,6 +36,7 @@ FIELDNAMES = [
     # gate sinyalleri - decided_by=judge olsa bile HER ZAMAN doldurulur (denetim:
     # bu satir neden gate'te durmayip LLM'e dustu?)
     "gate_parent_verdict",
+    "gate_parent_id",          # C4: gate ne ONERMISTI (hakemle kiyas icin)
     "gate_parent_confidence",
     "gate_parent_tsr",
     "gate_parent_exact_match",
@@ -45,6 +46,7 @@ FIELDNAMES = [
     "gate_parent_cosine",
     "gate_parent_reason",
     "gate_subunit_verdict",
+    "gate_subunit_id",         # C4
     "gate_subunit_confidence",
     "gate_subunit_tsr",
     "gate_subunit_exact_match",
@@ -71,6 +73,16 @@ def _gate_signal_cols(prefix: str, d: GateDecision | None) -> dict[str, str]:
     cosine = s.get("cosine")
     return {
         f"{prefix}_verdict": d.verdict if d is not None else "",
+        # C4 (2026-08-06): gate'in ONERDIGI id. Bu kolon olmadan "gate hangi
+        # kaydi secmisti, hakemin sectigiyle AYNI MIYDI?" sorusu batch
+        # ciktisindan cevaplanamiyordu - ve tam da bu soru iki karari kilitliyor:
+        #   - gate `ambiguous` dedigi 33 sorguda hakem 33/33 tek adaya bagladi;
+        #     gate'in onerisi de ayni ise `any_rival_blocks_auto` kapatilabilir,
+        #     farkli ise kapatmak YANLIS auto uretir (bkz. gate.py docstring).
+        #   - gate `review` deyip hakemin `auto_match` buldugu 79 sorgu.
+        # `verdict` no_match/review iken de dolabilir (gate aday ONERIR ama
+        # kimlik VERMEZ - bkz. gate._enforce_coherence "oneri" ayrimi).
+        f"{prefix}_id": (d.matched_id or "") if d is not None else "",
         f"{prefix}_confidence": f"{d.confidence:.3f}" if d is not None else "",
         f"{prefix}_tsr": str(s.get("tsr", "")) if "tsr" in s else "",
         f"{prefix}_exact_match": str(s.get("exact_match", "")) if "exact_match" in s else "",
@@ -135,12 +147,17 @@ def process_one_decide(
                 ),
                 "unit_phrase": d.unit_phrase,
                 "gate": {
-                    "parent": {"verdict": d.gate.parent.verdict, "signals": d.gate.parent.signals},
+                    "parent": {
+                        "verdict": d.gate.parent.verdict,
+                        "matched_id": d.gate.parent.matched_id,   # C4
+                        "signals": d.gate.parent.signals,
+                    },
                     "subunit": (
                         None
                         if d.gate.subunit is None
                         else {
                             "verdict": d.gate.subunit.verdict,
+                            "matched_id": d.gate.subunit.matched_id,   # C4
                             "signals": d.gate.subunit.signals,
                         }
                     ),

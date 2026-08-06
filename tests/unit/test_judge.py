@@ -437,3 +437,82 @@ class TestLiveOllama:
         except Exception as exc:  # model cekilmemis, timeout vb. - test ortami eksik
             pytest.skip(f"canli cagri basarisiz: {exc}")
         assert out.parent.verdict in {"auto_match", "review", "ambiguous", "no_match"}
+
+
+# --------------------------------------------------------------------------- #
+# C2 (2026-08-06): GECICI tasima hatalarinda yeniden deneme. 500-sorgu
+# kosusunda 40 hatanin 10'u "Connection refused"du (Ollama anlik mesgul).
+# Kritik ayrim: KALICI hatalar (4xx) yeniden DENENMEZ - tekrar sadece zaman
+# yakar ve gercek sorunu (yanlis model tag'i vb.) gizler.
+# --------------------------------------------------------------------------- #
+class TestOllamaRetry:
+    def _client(self, monkeypatch, yanitlar):
+        """`yanitlar`: her cagride ya firlatilacak istisna ya donecek sahte yanit."""
+        import httpx
+
+        from institution_resolver_v3.judge.client import OllamaClient
+
+        c = OllamaClient(model="test:model", retry_backoff=0.0)
+        cagri = {"n": 0}
+
+        class _Yanit:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"response": '{"ok": true}', "prompt_eval_count": 10}
+
+        def sahte_post(url, json=None):
+            i = cagri["n"]
+            cagri["n"] += 1
+            sonuc = yanitlar[min(i, len(yanitlar) - 1)]
+            if isinstance(sonuc, Exception):
+                raise sonuc
+            return _Yanit()
+
+        monkeypatch.setattr(c, "_http", lambda: type("H", (), {"post": staticmethod(sahte_post)})())
+        return c, cagri
+
+    def test_transient_connect_error_is_retried(self, monkeypatch):
+        """Connection refused -> yeniden dene; sonraki deneme tutarsa BASARILI."""
+        import httpx
+
+        c, cagri = self._client(monkeypatch, [httpx.ConnectError("refused"), "ok"])
+        out = c.generate("selam")
+        assert out == '{"ok": true}'
+        assert cagri["n"] == 2                     # bir kez yeniden denendi
+
+    def test_transient_error_gives_up_after_max_retries(self, monkeypatch):
+        """Surekli basarisizsa LlmError - ama deneme sayisi mesajda gorunur."""
+        import httpx
+
+        from institution_resolver_v3.judge.client import LlmError
+
+        c, cagri = self._client(monkeypatch, [httpx.ConnectError("refused")])
+        with pytest.raises(LlmError) as ei:
+            c.generate("selam")
+        assert cagri["n"] == 3                     # 1 + max_retries(2)
+        assert "3 deneme" in str(ei.value)
+
+    def test_4xx_is_not_retried(self, monkeypatch):
+        """KALICI hata: yanlis model tag'i gibi 4xx TEK denemede birakilir."""
+        import httpx
+
+        from institution_resolver_v3.judge.client import LlmError
+
+        resp = httpx.Response(404, request=httpx.Request("POST", "http://x"))
+        hata = httpx.HTTPStatusError("not found", request=resp.request, response=resp)
+        c, cagri = self._client(monkeypatch, [hata])
+        with pytest.raises(LlmError):
+            c.generate("selam")
+        assert cagri["n"] == 1                     # TEKRAR YOK
+
+    def test_5xx_is_retried(self, monkeypatch):
+        """Sunucu tarafi gecici hata (5xx) yeniden denenir."""
+        import httpx
+
+        resp = httpx.Response(503, request=httpx.Request("POST", "http://x"))
+        hata = httpx.HTTPStatusError("busy", request=resp.request, response=resp)
+        c, cagri = self._client(monkeypatch, [hata, "ok"])
+        assert c.generate("selam") == '{"ok": true}'
+        assert cagri["n"] == 2

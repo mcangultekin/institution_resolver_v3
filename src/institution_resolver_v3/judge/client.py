@@ -24,6 +24,7 @@ cagrisinda paylasilir - CLI/batch kullaniminda dogal olarak boyle kullanilir).""
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -69,6 +70,14 @@ class OllamaClient:
     host: str = DEFAULT_HOST
     timeout: float = DEFAULT_TIMEOUT
     num_ctx: int = DEFAULT_NUM_CTX
+    # C2 (2026-08-06): GECICI tasima hatalarinda yeniden dene. 500-sorgu
+    # kosusunda 40 hatanin 10'u "[Errno 111] Connection refused"du - Ollama
+    # anlik mesguldu/yeniden yukluyordu, satir kalici hata olarak yazilip
+    # atlandi. Olcek notu: %2 kayip, 500K kayitlik uretim kosusunda ~10.000
+    # satir demek ve `--resume` bunlari KURTARMIYOR (hata satiri da yazilmis
+    # sayilir). Yalniz gecici sinif yeniden denenir - bkz. generate().
+    max_retries: int = 2          # toplam 3 deneme
+    retry_backoff: float = 0.5    # 0.5s, 1.0s (ustel)
     _client: httpx.Client | None = field(default=None, repr=False, compare=False)
 
     def _http(self) -> httpx.Client:
@@ -102,20 +111,46 @@ class OllamaClient:
         uretemez (canli dogrulandi 2026-07-24: prompt'ta "Z9 sec" denmesine
         ragmen enum {A1,B2} disina cikamadi). Verilmezse eski davranis:
         `format: "json"` sadece "gecerli JSON olsun" der, icerigi kisitlamaz."""
-        try:
-            resp = self._http().post(
-                f"{self.host}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": format_schema if format_schema is not None else "json",
-                    "options": {"temperature": temperature, "num_ctx": self.num_ctx},
-                },
-            )
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise LlmError(f"Ollama cagrisi basarisiz ({self.model}): {exc}") from exc
+        govde = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "format": format_schema if format_schema is not None else "json",
+            "options": {"temperature": temperature, "num_ctx": self.num_ctx},
+        }
+        # C2: GECICI hatalarda yeniden dene, KALICI olanlarda DENEME.
+        #   yeniden denenir : httpx.TransportError (connect refused/reset, timeout,
+        #                     okuma hatasi) + HTTP 5xx  -> Ollama mesgul/yeniden
+        #                     yukluyor; ayni istek birazdan calisabilir.
+        #   DENENMEZ        : HTTP 4xx (yanlis model tag'i, bozuk sema) - istek
+        #                     ne kadar tekrarlanirsa tekrarlansin ayni hatayi
+        #                     verir; tekrar sadece zaman yakar ve gercek sorunu
+        #                     gizler. `temperature=0` oldugu icin yeniden deneme
+        #                     determinizmi bozmaz.
+        son: Exception | None = None
+        for deneme in range(self.max_retries + 1):
+            try:
+                resp = self._http().post(f"{self.host}/api/generate", json=govde)
+                resp.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500 or deneme == self.max_retries:
+                    raise LlmError(
+                        f"Ollama cagrisi basarisiz ({self.model}): {exc}"
+                    ) from exc
+                son = exc
+            except httpx.TransportError as exc:
+                if deneme == self.max_retries:
+                    raise LlmError(
+                        f"Ollama cagrisi basarisiz ({self.model}, "
+                        f"{self.max_retries + 1} deneme): {exc}"
+                    ) from exc
+                son = exc
+            except httpx.HTTPError as exc:      # kalan httpx hatalari: tekrar YOK
+                raise LlmError(f"Ollama cagrisi basarisiz ({self.model}): {exc}") from exc
+            time.sleep(self.retry_backoff * (2**deneme))
+        else:  # pragma: no cover - dongu ya break ya raise ile biter
+            raise LlmError(f"Ollama cagrisi basarisiz ({self.model}): {son}")
         data = resp.json()
         # Kirpilma korumasi: Ollama pencereyi asan prompt'u HATASIZ keser; modelin
         # gordugu token sayisi pencereye dayandiysa prompt'un basi buyuk ihtimalle
