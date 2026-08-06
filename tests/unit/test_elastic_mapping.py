@@ -227,3 +227,55 @@ def test_rrf_prefers_items_in_both_lists() -> None:
     knn = [{"id": "X"}, {"id": "only_knn"}]
     out = rrf_merge([bm25, knn], size=10)
     assert out[0]["id"] == "X"                 # iki listede de var -> en yuksek
+
+
+# --------------------------------------------------------------------------- #
+# B2 (2026-08-06): arama yanitinda `_source` beyaz listesi. Bu liste eksik
+# kalirsa SESSIZ bozulma olur - alan `None` doner, hata VERMEZ, kalite duser
+# (en tehlikelisi country/city: prompt onlari "ZORUNLU kontrol" sayiyor).
+# O yuzden liste ve `raw`'dan okunan alan adlari burada sabitlenir.
+# --------------------------------------------------------------------------- #
+def test_pool_source_fields_covers_every_consumer() -> None:
+    """`ScoredCandidate.raw`'dan ad ad okunan TUM alanlar beyaz listede olmali.
+
+    Tuketiciler (2026-08-06 taramasi):
+      decompose.py    -> name, aliases
+      _attach_signals -> id, record_type, name, aliases
+      gate.py         -> parent_id
+      resolve.py      -> parent_id
+      candidates.py   -> country, city, parent_id, parent_name, kind_label_raw
+    Yeni bir tuketici `raw.get("X")` yazarsa bu testi de guncellemeli - aksi
+    halde X sessizce None doner.
+    """
+    from institution_resolver_v3.elastic.search import POOL_SOURCE_FIELDS
+
+    tuketilen = {
+        "id", "record_type", "name", "aliases",
+        "parent_id", "parent_name", "country", "city", "kind_label_raw",
+    }
+    assert tuketilen <= set(POOL_SOURCE_FIELDS)
+
+
+def test_pool_source_excludes_embedding() -> None:
+    """`embedding` yanitta ISTENMEZ - belge yukunun %99'u o (16.970/17.388 B).
+
+    Hicbir KARAR yolu kosinus kullanmiyor (gate'te '# gosterim', prompt'tan
+    2026-07-27'de cikarildi). kNN retrieval etkilenmez: o ES tarafinda calisir.
+    """
+    from institution_resolver_v3.elastic.search import POOL_SOURCE_FIELDS
+
+    assert "embedding" not in POOL_SOURCE_FIELDS
+
+
+def test_search_queries_still_use_unreturned_fields() -> None:
+    """Kritik ayrim: `_source` filtresi ARAMAYI etkilemez.
+
+    `alias_variants` (parent) ve `aliases_text` (subunit) yanitta DONMEZ ama
+    sorguda ARANMAYA devam eder - ters indeks ile `_source` ayri seylerdir.
+    """
+    from institution_resolver_v3.elastic.search import POOL_SOURCE_FIELDS
+
+    assert "alias_variants" not in POOL_SOURCE_FIELDS
+    assert "aliases_text" not in POOL_SOURCE_FIELDS
+    assert "alias_variants" in str(build_search_query("gazi", "parent"))
+    assert "aliases_text" in str(build_search_query("istatistik", "subunit"))

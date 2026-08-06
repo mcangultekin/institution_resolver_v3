@@ -110,7 +110,7 @@ def _gate_response(result, verdict) -> GateResponse:
 
 @router.post("/match", response_model=MatchResponse)
 def match(req: QueryRequest, resolve_fn: Callable = Depends(get_resolve_fn)) -> MatchResponse:
-    result = resolve_fn(req.query, size=req.top)
+    result = resolve_fn(req.query, size=req.top, with_cosine=req.with_cosine)
     d = result.decomposed
     sources = d.hypotheses or [d]  # hipotez yoksa birincil alanlar (bkz. decompose.py)
     hyps = [
@@ -137,7 +137,7 @@ def gate_endpoint(
     resolve_fn: Callable = Depends(get_resolve_fn),
     gate_fn: Callable = Depends(get_gate_fn),
 ) -> GateResponse:
-    result = resolve_fn(req.query, size=req.top)
+    result = resolve_fn(req.query, size=req.top, with_cosine=req.with_cosine)
     verdict = gate_fn(result)
     return _gate_response(result, verdict)
 

@@ -296,3 +296,84 @@ class TestExactMatchSignal:
         by_id = {c.id: c for c in result.parents}
         assert by_id["2"].exact_match is True
         assert by_id["1"].exact_match is True  # "Gazi Üniversitesi" de ayni normalize'a denk gelir
+
+
+# --------------------------------------------------------------------------- #
+# B4 (2026-08-06): kNN'e girmemis adaylar icin kosinusu AYRICA hesaplama adimi
+# varsayilan olarak KAPALI. Kosinus hicbir karar yoluna girmiyor (gate
+# tsr/exact/span kullanir, prompt'tan 814437b ile cikarildi) ve havuz sirasini
+# etkilemiyor (RRF ham listelerle calisir).
+# --------------------------------------------------------------------------- #
+class TestB4CosineFlag:
+    def test_default_does_not_compute_cosine_for_non_knn(self):
+        """Varsayilan: cosine_fn CAGRILMAZ - pahali yol (encode+mget+numpy) atlanir."""
+        cagrildi = []
+
+        def izleyen_cosine(text, hits):
+            cagrildi.append(len(hits))
+            return {}
+
+        from institution_resolver_v3.retrieve import resolve as R
+
+        orij = R._default_cosine_fn
+        R._default_cosine_fn = izleyen_cosine
+        try:
+            R.resolve(
+                "gazi universitesi",
+                search_fn=_fake_search_fn,
+                search_knn_fn=_fake_search_knn_fn,
+                decompose_search_fn=lambda t, rt: _fake_search_fn(t, rt),
+            )
+        finally:
+            R._default_cosine_fn = orij
+        assert cagrildi == []            # hic cagrilmadi
+
+    def test_with_cosine_true_restores_old_behaviour(self):
+        """with_cosine=True eski davranisi geri getirir (gosterim/hata ayiklama)."""
+        cagrildi = []
+
+        def izleyen_cosine(text, hits):
+            cagrildi.append(len(hits))
+            return {}
+
+        from institution_resolver_v3.retrieve import resolve as R
+
+        orij = R._default_cosine_fn
+        R._default_cosine_fn = izleyen_cosine
+        try:
+            R.resolve(
+                "gazi universitesi",
+                with_cosine=True,
+                search_fn=_fake_search_fn,
+                search_knn_fn=_fake_search_knn_fn,
+                decompose_search_fn=lambda t, rt: _fake_search_fn(t, rt),
+            )
+        finally:
+            R._default_cosine_fn = orij
+        assert cagrildi                  # cagrildi
+
+    def test_knn_candidates_still_get_cosine_for_free(self):
+        """kNN top-K'ya GIREN adaylar kosinusunu ES skorundan almaya devam eder.
+
+        B4 yalnizca "listede yoktu, AYRICA hesaplayalim" adimini kaldirir; kNN
+        yanitiyla zaten gelen skor (cosine -> (c+1)/2) geri cevrilmeye devam
+        eder (2s-1). Bu ayrim korunmazsa vektor kaniti tamamen kaybolurdu.
+        """
+        from institution_resolver_v3.retrieve import resolve as R
+
+        # kNN havuzu parent 101'i dondursun; ES skoru (kosinus+1)/2 uzayinda
+        def knn_fn(text, record_type, *, extra_filters=None, size=50):
+            if record_type == "parent":
+                return [{**_PARENT_POOL[0], "score": 0.95}]  # -> kosinus 0.90
+            return []
+
+        r = R.resolve(
+            "gazi universitesi",
+            search_fn=_fake_search_fn,
+            search_knn_fn=knn_fn,
+            decompose_search_fn=lambda t, rt: _fake_search_fn(t, rt),
+        )
+        aday = [c for c in r.parents if c.id == "101"]
+        assert aday, "test verisi anlamsiz: 101 havuzda olmali"
+        assert aday[0].cosine is not None
+        assert abs(aday[0].cosine - 0.90) < 1e-9            # 2*0.95-1, kayipsiz

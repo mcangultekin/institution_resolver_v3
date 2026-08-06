@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 
 from institution_resolver_v3.normalize.abbreviations import expand_known_abbreviations
 
@@ -180,9 +181,15 @@ def expand_query_text(text: str, locale: str | None = None) -> str:
 # --------------------------------------------------------------------------
 # 6) Tam normalizasyon: anahtar (keyword) alan uretimi icin
 # --------------------------------------------------------------------------
-@dataclass
+@dataclass(frozen=True)
 class NormalizedName:
     """Bir kurum/birim isminin ya da sorgunun tam normalizasyon sonucu.
+
+    `frozen=True`: `normalize()` cache'lendigi icin ayni ornek COK sayida
+    cagriya paylasilir - yerinde degistirilebilseydi bir tuketicinin mutasyonu
+    cache'i zehirlerdi. Ayni tuzak `embedding/query_encoder.py`'de vektorun
+    read-only isaretlenmesiyle kapatilmisti; buradaki karsiligi budur.
+    Kod tabaninda hicbir yerde bu nesneye atama YAPILMIYOR (dogrulandi).
 
     Alanlar:
         raw:            orijinal, dokunulmamis girdi.
@@ -203,6 +210,7 @@ class NormalizedName:
         return self.base.split(" ") if self.base else []
 
 
+@lru_cache(maxsize=100_000)
 def normalize(
     raw_text: str,
     *,
@@ -210,6 +218,13 @@ def normalize(
     expand_abbreviations: bool = True,
 ) -> NormalizedName:
     """Butun normalizasyon adimlarini sirayla uygulayan ana giris noktasi.
+
+    CACHE'LI (2026-08-06): tek bir sorgu icinde ayni katalog string'i defalarca
+    normalize ediliyordu - `decompose` her span x her hit x her ad-varyanti,
+    `_attach_signals` her aday x her alias icin cagiriyor; span taramasi O(n^2)
+    oldugu icin ayni parent'in ayni alias'i onlarca kez yeniden isleniyordu.
+    Saf fonksiyon (girdi -> cikti deterministik, yan etki yok) ve donen nesne
+    `frozen` oldugu icin paylasim guvenli.
 
     Adim sirasi kasitli:
     1. Unicode NFKC normalizasyonu (bilesik/ayrik aksan karakterlerini

@@ -74,11 +74,16 @@ def index_cmd(
 def match_cmd(
     query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
     top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+    cosine: bool = typer.Option(
+        False, "--cosine",
+        help="kNN'e girmemis adaylar icin de kosinus HESAPLA (yavas; varsayilan kapali - "
+             "kosinus hicbir karara girmiyor, bkz. resolve._no_cosine_fn)",
+    ),
 ) -> None:
     """Tek sorgu: decompose + parent-first cascade + sinyaller (retrieve.resolve)."""
     from institution_resolver_v3.retrieve.resolve import resolve
 
-    result = resolve(query, size=top)
+    result = resolve(query, size=top, with_cosine=cosine)
     d = result.decomposed
     typer.echo("decompose hipotezleri (secim yok, hepsi havuza katilir):")
     for i, h in enumerate(d.hypotheses or []):
@@ -116,6 +121,11 @@ def match_cmd(
 def gate_cmd(
     query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
     top: int = typer.Option(5, "--top", help="her havuzdan kac aday (havuz buyuklugu)"),
+    cosine: bool = typer.Option(
+        False, "--cosine",
+        help="kNN'e girmemis adaylar icin de kosinus HESAPLA (yavas; sinyal gosterimi "
+             "icin - karara GIRMEZ, bkz. gate.py 'bm25/kosinus GIRMEZ')",
+    ),
 ) -> None:
     """Tek sorgu: resolve() + LLM'siz deterministik triyaj (gate). Tek cevap +
     guven kovasi (auto_match/review/ambiguous/no_match). LLM KULLANILMAZ."""
@@ -125,7 +135,7 @@ def gate_cmd(
     from institution_resolver_v3.retrieve.resolve import resolve
 
     t0 = time.time()
-    result = resolve(query, size=top)
+    result = resolve(query, size=top, with_cosine=cosine)
     verdict = run_gate(result)
     dt = time.time() - t0
 

@@ -18,7 +18,7 @@ from institution_resolver_v3.judge.client import LlmError
 from institution_resolver_v3.judge.judge import JudgeValidationError
 
 
-def _fake_resolve(query, size=5):
+def _fake_resolve(query, size=5, with_cosine=False):
     parent = NS(
         id="P1", name="EGE UNIVERSITESI", bm25_norm=0.9, cosine=0.5,
         token_set_ratio=95.0, exact_match=True, passed_parent_filter=None,

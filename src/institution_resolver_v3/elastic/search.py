@@ -98,6 +98,47 @@ def build_search_query(
     return {"bool": {"filter": filters, "must": [_alias_variants_clause(text)]}}
 
 
+# Arama yanitinda ISTENEN _source alanlari (2026-08-06). Belge 12 alan tasiyor
+# ama Python tarafinda yalnizca bunlar okunuyor; gerisi ag/JSON yuku.
+#
+# NEDEN: `_source` filtresi ARAMAYI ETKILEMEZ - arama ters indekse bakar, `_source`
+# yalnizca "bulunan belgeyi geri ver" kismidir. `aliases_text` ve `alias_variants`
+# aranmaya aynen devam eder, sadece yanitta geri gonderilmezler.
+# OLCUM (parent:143): belge 17.388 B, Python'un okudugu 156 B (%0.9) - kalanin
+# neredeyse tamami `embedding` (16.970 B, 768 ondalik sayi JSON metni olarak).
+# Sorgu basina 12-16 ES cagrisi x bu yuk = 2.5-7.6 MB/sorgu olculdu.
+#
+# LISTE TUKETICI TARAMASIYLA cikarildi (tahmin DEGIL) - `_attach_signals` hit
+# sozlugunu oldugu gibi `ScoredCandidate.raw`'a koyar ve `raw` su dort yerde
+# ad ad okunur:
+#   decompose.py    -> name, aliases
+#   _attach_signals -> id, record_type, name, aliases
+#   gate.py         -> parent_id            (capraz-havuz tutarlilik)
+#   resolve.py      -> parent_id            (cascade terms filtresi)
+#   candidates.py   -> country, city, parent_id, parent_name, kind_label_raw
+# `country`/`city` ozellikle kritik: prompt "ulke/sehir tutarliligi ZORUNLU
+# kontroldur" diyor - alan dusseydi hakem o kurali SESSIZCE uygulayamazdi.
+# Eksik alan hata vermez, `None` olur; bu yuzden liste comert tutuldu ve
+# tests/unit/test_elastic_mapping.py'de sabitlendi.
+#
+# `embedding` LISTEDE YOK: hicbir karar yolu kosinus kullanmiyor (yalniz CLI/
+# API/CSV gosterimi). kNN retrieval etkilenmez - o ES tarafinda calisir, skoru
+# yanitla gelir. Havuza girip kNN top-K'ya girmemis adaylarin kosinusu
+# `resolve._default_cosine_fn` tarafindan mget ile tamamlanir (embedding artik
+# _source'ta gelmedigi icin o yol devreye girer).
+POOL_SOURCE_FIELDS = [
+    "id",
+    "record_type",
+    "name",
+    "aliases",
+    "parent_id",
+    "parent_name",
+    "country",
+    "city",
+    "kind_label_raw",
+]
+
+
 def search(
     text: str,
     record_type: str,
@@ -116,6 +157,7 @@ def search(
         size=size,
         query=build_search_query(prepared, record_type, extra_filters=extra_filters),
         sort=[{"_score": {"order": "desc"}}, {"id": {"order": "asc"}}],  # determinizm
+        source_includes=POOL_SOURCE_FIELDS,  # bkz. POOL_SOURCE_FIELDS notu
     )
     return [{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
 
@@ -150,6 +192,7 @@ def search_many(
                 "size": size,
                 "query": query(expand_query_text(text), record_type, extra_filters=extra_filters),
                 "sort": [{"_score": {"order": "desc"}}, {"id": {"order": "asc"}}],
+                "_source": POOL_SOURCE_FIELDS,  # bkz. POOL_SOURCE_FIELDS notu
             }
         )
     resp = client.msearch(body=body)
@@ -207,6 +250,7 @@ def search_knn(
         knn=build_knn_query(
             qvec, record_type, k=size, num_candidates=max(100, size * 2), extra_filters=extra_filters
         ),
+        source_includes=POOL_SOURCE_FIELDS,  # bkz. POOL_SOURCE_FIELDS notu
     )
     return [{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
 
