@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace as NS
 
+import pytest
+
 from institution_resolver_v3.decide.decide import decide
 
 
@@ -74,20 +76,54 @@ def test_parent_not_auto_escalates_to_judge():
     assert d.gate is g  # gate sinyalleri kaybolmaz, LLM'e dusse bile saklanir
 
 
-def test_subunit_not_auto_escalates_whole_query():
-    # parent auto ama subunit review -> TUM sorgu LLM'e (kismi devir yok).
+def test_parent_auto_subunit_not_auto_uses_parent_fixed_judge():
+    """B10 (2026-08-07): parent auto + subunit belirsiz -> parent SABITLENIR,
+    hakeme yalnizca birim sorulur.
+
+    Bu, 2026-07-28'deki "auto degilse sorgunun TAMAMI hakeme gider" kararinin
+    BILINCLI revizyonudur. O karar "judge() kismi devri desteklemiyor"
+    gerekcesiyle alinmisti; artik `judge_subunit` var. Olculen gerekce
+    (500-sorgu baseline): 93 sorgu bu durumdaydi, hakem parent'i %90 aynen
+    onayliyordu, kosunun 33 hatasinin TAMAMI kurum/birim uyusmazligiydi ve
+    hakem gate'in dogru parent'ini 6 kez bozuyordu.
+    """
     g = _gate_result(_gate_decision("auto_match", "P1"), _gate_decision("review", None))
     j = _judge_result(
         parent_verdict="auto_match", parent_id="P1",
         subunit=NS(verdict="auto_match", matched_id="S1"), unit_phrase="tip",
     )
+    cagrilanlar = []
+
+    def _sahte_subunit(res, client, *, parent_id):
+        cagrilanlar.append(parent_id)
+        return j
+
+    d = decide(
+        "ege uni belirsiz birim", client=None, resolve_fn=_resolve_fn,
+        gate_fn=lambda res, config=None: g,
+        judge_fn=lambda res, client: pytest.fail("tam judge() cagrilmamaliydi"),
+        judge_subunit_fn=_sahte_subunit,
+    )
+    assert cagrilanlar == ["P1"]              # gate'in parent'i SABITLENDI
+    assert d.parent.decided_by == "judge"
+    assert d.subunit.matched_id == "S1"
+
+
+def test_judge_subunit_fn_none_restores_old_whole_query_behaviour():
+    """`judge_subunit_fn=None` -> eski davranis (sorgunun tamami hakeme).
+
+    Geri alma yolu tek parametre; B10 bir bayrakla kapatilabilir olmali."""
+    g = _gate_result(_gate_decision("auto_match", "P1"), _gate_decision("review", None))
+    j = _judge_result(
+        parent_verdict="review", parent_id="P9",
+        subunit=NS(verdict="auto_match", matched_id="S1"), unit_phrase="tip",
+    )
     d = decide(
         "ege uni belirsiz birim", client=None, resolve_fn=_resolve_fn,
         gate_fn=lambda res, config=None: g, judge_fn=lambda res, client: j,
+        judge_subunit_fn=None,
     )
-    assert d.parent.decided_by == "judge"
-    assert d.subunit.decided_by == "judge"
-    assert d.subunit.matched_id == "S1"
+    assert d.parent.matched_id == "P9"        # hakem parent'i EZEBILDI
 
 
 def test_judge_subunit_none_stays_none():

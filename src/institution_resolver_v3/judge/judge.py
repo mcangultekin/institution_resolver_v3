@@ -20,10 +20,18 @@ import json
 
 from pydantic import ValidationError
 
-from institution_resolver_v3.judge.candidates import CandidateView, build_candidate_views
+from institution_resolver_v3.judge.candidates import (
+    DEFAULT_MAX_CANDIDATES,
+    CandidateView,
+    build_candidate_views,
+)
 from institution_resolver_v3.judge.client import LlmClient
-from institution_resolver_v3.judge.prompt import build_prompt
-from institution_resolver_v3.judge.schema import JudgeResult, SubunitDecision
+from institution_resolver_v3.judge.prompt import build_prompt, build_subunit_prompt
+from institution_resolver_v3.judge.schema import (
+    JudgeResult,
+    ParentDecision,
+    SubunitDecision,
+)
 from institution_resolver_v3.retrieve.resolve import ResolveResult
 
 
@@ -248,4 +256,102 @@ def judge(resolve_result: ResolveResult, client: LlmClient) -> JudgeResult:
     ):
         result.subunit = SubunitDecision(verdict="no_match", matched_id=None)
 
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# B10 (2026-08-07): parent SABIT, yalnizca subunit sorulur.
+# Gerekce ve olcumler prompt.py'deki `build_subunit_prompt` blogunda.
+# --------------------------------------------------------------------------- #
+def build_subunit_format_schema(subunits: list[CandidateView]) -> dict:
+    """Yalniz-subunit semasi. Enum SADECE sabit parent'in altindaki adaylar ->
+    "kurum/birim uyusmazligi" hatasi uretim asamasinda IMKANSIZ (bu hata
+    500-sorgu baseline'inda 33 kez, yani tum hatalarin %100'u olarak cikti)."""
+    return {
+        "type": "object",
+        "properties": {
+            # unit_phrase ONCE (llama.cpp grammar'i sirayi korur - dikkat cipasi)
+            "unit_phrase": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "subunit": {
+                "anyOf": [
+                    _decision_schema([_choice(c) for c in subunits]),
+                    {"type": "null"},
+                ]
+            },
+        },
+        "required": ["unit_phrase", "subunit"],
+    }
+
+
+def judge_subunit(
+    resolve_result: ResolveResult,
+    client: LlmClient,
+    *,
+    parent_id: str,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
+) -> JudgeResult:
+    """Parent SABIT (`parent_id`) kabul edilir; hakeme yalnizca birim sorulur.
+
+    Doner: `JudgeResult` - parent her zaman (auto_match, parent_id). Hakem
+    parent'i DEGISTIREMEZ; bu, cagiran katmanin (decide) bilincli devridir.
+
+    Aday listesi yalnizca `parent_id` altindaki subunit'lerden kurulur. Bu
+    listede hic aday yoksa LLM HIC CAGRILMAZ - cevap zaten no_match'tir
+    (ek kazanc: o sorgular tamamen LLM'siz biter).
+    """
+    _, subunits_all = build_candidate_views(resolve_result, max_candidates=10**6)
+    altindakiler = [c for c in subunits_all if c.parent_id == parent_id][:max_candidates]
+    parent_karar = ParentDecision(verdict="auto_match", matched_id=parent_id)
+
+    if not altindakiler:
+        # LLM'e gerek yok: bu kurumun altinda hicbir aday yok -> no_match.
+        return JudgeResult(
+            parent=parent_karar,
+            unit_phrase=None,
+            subunit=SubunitDecision(verdict="no_match", matched_id=None),
+        )
+
+    parent_adi = next(
+        (c.name for c in resolve_result.parents if c.id == parent_id), parent_id
+    )
+    subunits_lbl, s_map = _label_views(altindakiler, "S")
+    prompt = build_subunit_prompt(resolve_result.query, parent_adi, subunits_lbl)
+    raw = client.generate(prompt, format_schema=build_subunit_format_schema(subunits_lbl))
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise JudgeValidationError(
+            "Hakem geçerli bir yanıt döndürmedi (biçim hatası).",
+            debug=f"JSON parse hatası: {exc}. Ham çıktının başı: {raw[:200]!r}",
+        ) from exc
+
+    # parent'i biz koyuyoruz; model yalnizca unit_phrase+subunit uretti.
+    payload["parent"] = {"verdict": "auto_match", "matched_id": parent_id}
+    try:
+        result = JudgeResult.model_validate(payload)
+    except ValidationError as exc:
+        raise JudgeValidationError(
+            "Hakemin cevabı şemaya uymuyor (çelişkili/eksik alan).",
+            debug=_format_validation_error(exc),
+        ) from exc
+
+    if result.subunit is not None and result.subunit.matched_id is not None:
+        label = result.subunit.matched_id.split("|", 1)[0]
+        result.subunit.matched_id = s_map.get(label, result.subunit.matched_id)
+
+    # Kusak + pantolon askisi: sema zaten enum'u kisitliyor ama sema
+    # desteklemeyen bir client enjekte edilirse tek koruma bu (judge() ile ayni
+    # ilke). Parent'i BIZ koyduk, dolayisiyla dogrulanacak tek sey subunit'in
+    # gercekten listede olmasi - "kurum/birim uyusmazligi" kontrolu gereksiz,
+    # aday listesi zaten `parent_id` altindan suzuldu.
+    if result.subunit is not None and result.subunit.matched_id is not None:
+        if result.subunit.matched_id not in {c.id for c in altindakiler}:
+            raise JudgeValidationError(
+                "Hakem geçersiz bir cevap verdi (bilinmeyen alt-birim kaydı).",
+                debug=(
+                    f"subunit.matched_id={result.subunit.matched_id!r} "
+                    f"parent={parent_id!r} altindaki aday listesinde yok."
+                ),
+            )
     return result

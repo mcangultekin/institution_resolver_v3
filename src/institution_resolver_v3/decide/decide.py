@@ -20,6 +20,7 @@ from typing import Any, Callable
 from institution_resolver_v3.gate.gate import GateResult, gate as _gate
 from institution_resolver_v3.judge.client import LlmClient
 from institution_resolver_v3.judge.judge import JudgeResult, judge as _judge
+from institution_resolver_v3.judge.judge import judge_subunit as _judge_subunit
 from institution_resolver_v3.judge.schema import Verdict
 from institution_resolver_v3.retrieve.resolve import ResolveResult, resolve as _resolve
 
@@ -60,6 +61,9 @@ def decide(
     resolve_fn: Callable = _resolve,
     gate_fn: Callable = _gate,
     judge_fn: Callable = _judge,
+    # B10: parent-sabitli subunit sorgusu. None verilirse eski davranis
+    # (sorgunun tamami hakeme) - testler/geriye donuk uyum icin.
+    judge_subunit_fn: Callable | None = _judge_subunit,
     config: dict[str, Any] | None = None,
 ) -> DecideResult:
     """resolve() -> gate(); ikisi de (parent + varsa subunit) auto_match ise
@@ -84,7 +88,27 @@ def decide(
             resolve_result=result,
         )
 
-    j = judge_fn(result, client)
+    # B10 (2026-08-07): gate parent'a `auto_match` verdiyse parent'i SABITLE ve
+    # hakeme yalnizca birimi sor. Olculen gerekce (500-sorgu baseline):
+    #   - LLM'e giden 273 sorgunun 93'u tam bu durumdaydi (parent auto, subunit
+    #     belirsiz) ve hakem parent kararini %90 aynen onayladi -> prompt'un
+    #     parent kismi israfti.
+    #   - Kosunun 33 hatasinin TAMAMI "kurum/birim uyusmazligi"ydi; enum sadece
+    #     o parent'in altindaki subunit'lerle kurulunca bu hata IMKANSIZ olur.
+    #   - Hakem gate'in dogru parent'ini 93 satirin 6'sinda BOZUYORDU.
+    # Bedeli: gate'in parent'i yanlissa hakem artik duzeltemez. Bu, 2026-07-28'de
+    # alinan "auto degilse sorgunun TAMAMI hakeme gider" kararinin bilincli
+    # revizyonudur - o karar "judge() bunu desteklemiyor" gerekcesiyle alinmisti,
+    # dogruluk gerekcesiyle degil; simdi ayri bir API var.
+    if (
+        judge_subunit_fn is not None
+        and g.parent.verdict == "auto_match"
+        and g.parent.matched_id is not None
+        and g.subunit is not None
+    ):
+        j = judge_subunit_fn(result, client, parent_id=g.parent.matched_id)
+    else:
+        j = judge_fn(result, client)
     parent = DecideDecision(j.parent.verdict, j.parent.matched_id, "judge")
     subunit = (
         None

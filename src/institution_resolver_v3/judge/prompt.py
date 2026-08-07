@@ -165,3 +165,89 @@ ALT-BİRİM ADAYLARI (subunit):
 
 Şimdi kararını yukarıdaki kurallara ve şemaya uygun JSON olarak ver.
 """
+
+
+# --------------------------------------------------------------------------- #
+# B10 (2026-08-07): PARENT-SABITLI subunit sorgusu.
+#
+# Gate parent'a `auto_match` verdiginde sorgunun TAMAMINI hakeme sormak yerine
+# yalnizca birimi soruyoruz. Olculen gerekce (500-sorgu baseline):
+#   - 93 sorgu bu durumdaydi (gate parent=auto ama subunit belirsiz -> LLM'e
+#     sorgunun TAMAMI gidiyordu) ve hakem parent kararini %90 aynen onayladi;
+#     prompt'un parent kismi cogunlukla israfti.
+#   - Kosunun 33 hatasinin (%6.6) TAMAMI "kurum/birim uyusmazligi"ydi: hakem
+#     bir parent, bir subunit seciyor ama subunit'in gercek parent_id'si
+#     farkli cikiyordu. Parent sabitlenip enum yalnizca O parent'in altindaki
+#     subunit'lerle kurulunca bu hata FIZIKSEL OLARAK uretilemez.
+#   - Hakem, gate'in DOGRU parent'ini 93 satirin 6'sinda bozuyordu (ör.
+#     "Gaziantep Sehitkamil State Hospital" -> "Serik Devlet Hastanesi";
+#     "A B Shetty Memorial Institute..." -> "Memorial"). Parent sabit olunca
+#     bu da engellenir.
+#
+# Prompt'tan CIKANLAR (ve neden guvenli):
+#   - KURUM ADAYLARI listesi: parent zaten belli (olculdu: prompt'un %18'i)
+#   - parent secim kurallari, iki-liste ayrimi uyarisi, ulke/sehir tutarliligi
+#     (subunit ulkesini parent'tan miras alir - parent sabitse celiski yok)
+#   - sinir hipotezleri: kurum sinirini bulma isi bitti
+# KALANLAR: ham sorgu (ham metin ilkesi), uc-seviye kurali, en spesifik birim
+# vurgusu, "birim yoksa no_match GECERLI ve YAYGIN" kurali, unit_phrase cipasi.
+# --------------------------------------------------------------------------- #
+_SUBUNIT_SCHEMA_EXAMPLE = """{
+  "unit_phrase": "<sorgudaki EN SPESİFİK birim ifadesi, sorgudan AYNEN kopyala>" | null,
+  "subunit": {"verdict": "auto_match|review|ambiguous|no_match", "matched_id": "<id|ad>" | null} | null
+}"""
+
+
+def build_subunit_prompt(
+    query: str,
+    parent_name: str,
+    subunits: list[CandidateView],
+) -> str:
+    """Parent SABIT; yalnizca alt-birim sorulur (bkz. yukaridaki blok).
+
+    `parent_name` bilgi olarak verilir - secilecek bir sey degil, baglam.
+    `subunits` YALNIZCA o parent'in altindaki adaylardir (cagiran filtreler).
+    """
+    subunit_lines = "\n".join(_fmt_subunit(c) for c in subunits) or "  (aday yok)"
+    return f"""Görev: aşağıdaki sorguda geçen ALT-BİRİM ifadesini, KURUMU BİLİNEN
+bir katalog kaydıyla eşleştir.
+
+KURUM ZATEN BELİRLENDİ: "{parent_name}"
+Bu bir varsayım değil, verilmiş bilgidir - sorgulama, değiştirme, kendi kurum
+tahminini yapma. Senin tek işin: sorgudaki birim ifadesi, aşağıdaki alt-birim
+adaylarından hangisine karşılık geliyor?
+
+KARAR KURALLARI:
+- Sorgu ÜÇ seviyeli olabilir (ör. Üniversite > Fakülte > Bölüm). Katalog İKİ
+  seviyeli. Bu durumda hedef, sorgudaki EN SPESİFİK birim (bölüm/bilim dalı).
+  Aradaki seviye (fakülte) kendi başına eşleştirilecek bir hedef DEĞİLDİR -
+  sadece bağlam ipucu olarak kullan.
+- Sorguda hiç alt-birim ifadesi YOKSA (yalnızca kurum adı geçiyorsa),
+  "subunit" alanını TAMAMEN "null" yap - bunu "no_match" ile KARIŞTIRMA
+  ("no_match" = birim ifadesi var ama katalogda karşılığı bulunamadı).
+- "no_match" GEÇERLİ ve YAYGIN bir sonuçtur: sorgudaki birim ifadesinin bu
+  kurumun altında karşılığı yoksa, en benzerini SEÇME - no_match de. Alakasız
+  bir kayda auto_match vermek, hiç cevap verememekten ÇOK daha pahalıdır.
+- "tam_eşleşme=EVET", adayın adının (ya da bir alias'ının) sorgunun İÇİNDE
+  kesintisiz geçtiği anlamına gelir - sorgunun TAMAMIYLA aynı olduğu anlamına
+  GELMEZ. Sorgudaki EN SPESİFİK birim ifadesi, adayın eşleşen parçasının
+  DIŞINDA kalıyorsa, tam_eşleşme'si olmayan ama o parçaya karşılık gelen aday
+  tercih edilmelidir.
+- verdict: "auto_match" (yüksek güven, tek net aday), "review" (doğru görünüyor
+  ama insan onayı önerilir), "ambiguous" (birden fazla makul aday), "no_match".
+- matched_id, seçtiğin adayın "id|ad" biçimidir (ör. "S3|GERİATRİ BİLİM DALI") -
+  SADECE aşağıdaki listeden, yeni id/ad UYDURMA. "no_match"te null olmalı.
+- "unit_phrase": subunit kararından ÖNCE, sorgudaki EN SPESİFİK birim ifadesini
+  sorgudan AYNEN kopyala. Birim ifadesi yoksa null.
+
+ÇIKTI: SADECE aşağıdaki şemaya uyan, başka HİÇBİR metin/gerekçe içermeyen KISA
+bir JSON döndür:
+{_SUBUNIT_SCHEMA_EXAMPLE}
+
+SORGU (ham, orijinal, değiştirilmedi): "{query}"
+
+ALT-BİRİM ADAYLARI (hepsi "{parent_name}" kurumuna bağlıdır):
+{subunit_lines}
+
+Şimdi kararını yukarıdaki kurallara ve şemaya uygun JSON olarak ver.
+"""
