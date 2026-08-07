@@ -147,7 +147,7 @@ class TestMultiHypothesisCascade:
 
     def test_hypothesis_parent_injected_when_missing_from_pool(self):
         # Hipotezin parent'i havuz aramasinin top-K'sina girmese bile hakem icin
-        # aday listesinde bulunmali (asgari sinyallerle enjekte edilir).
+        # aday listesinde bulunmali (enjekte edilir).
         dsf = lambda text, rt: [{"id": "77", "name": "GAZİ ÜNİVERSİTESİ"}]  # noqa: E731
         result = resolve(
             "gazi üniversitesi istatistik bölümü",
@@ -155,12 +155,66 @@ class TestMultiHypothesisCascade:
             search_knn_fn=_fake_search_knn_fn,
             cosine_fn=_no_cosine_fn,
             decompose_search_fn=dsf,
+            fetch_docs_fn=lambda ids: {"77": {"id": "77", "name": "GAZİ ÜNİVERSİTESİ", "aliases": []}},
         )
         assert [c.id for c in result.parents] == ["77"]
         injected = result.parents[0]
         assert injected.raw.get("from_hypothesis_only") is True
-        assert injected.bm25_norm == 0.0
+        assert injected.bm25_norm == 0.0  # havuz aramasina GIRMEDI - bu bilgi korunur
         assert injected.cosine is None
+
+    def test_injected_parent_gets_signals_from_aliases(self):
+        """REGRESYON (2026-08-07): enjekte adayin ALIAS'lari sinyale girmeli.
+
+        Eski davranis sinyalleri elle ve YALNIZ kanonik ada karsi kuruyordu;
+        sorguyla birebir ortusen bir alias hic gorulmuyordu. Canli vaka:
+        "University of Health Sciences" sorgusunda dogru kayit (kanonik adi
+        Turkce, alias'i sorguyla birebir) exact_match=False/tsr~34 aliyor,
+        es-adli yabanci kayit tek guclu exact olarak kalip auto_match
+        kapiyordu.
+        """
+        dsf = lambda text, rt: [{"id": "49", "name": "SAĞLIK BİLİMLERİ ÜNİVERSİTESİ"}]  # noqa: E731
+        result = resolve(
+            "Department of Cardiology, University of Health Sciences, Adana",
+            search_fn=lambda text, rt, **kw: [],
+            search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
+            decompose_search_fn=dsf,
+            fetch_docs_fn=lambda ids: {
+                "49": {
+                    "id": "49",
+                    "name": "SAĞLIK BİLİMLERİ ÜNİVERSİTESİ",
+                    "aliases": ["SAĞLIK BİLİMLERİ ÜNİVERSİTESİ", "UNIVERSITY OF HEALTH SCIENCES"],
+                    "country": "TR",
+                    "city": "ÜSKÜDAR",
+                }
+            },
+        )
+        inj = next(c for c in result.parents if c.id == "49")
+        assert inj.exact_match is True
+        assert inj.exact_match_text == "university of health sciences"
+        assert inj.token_set_ratio == 100.0
+        assert inj.best_alias == "UNIVERSITY OF HEALTH SCIENCES"
+        # hakemin baglam alanlari da tasinmali (ulke/sehir ayrimi icin)
+        assert inj.raw.get("country") == "TR"
+        assert inj.raw.get("from_hypothesis_only") is True
+
+    def test_injected_parent_falls_back_when_doc_missing(self):
+        # Belge cekilemezse eski (ad-yalniz) davranisa duser ve bunu ISARETLER -
+        # eksik sinyal sessizce "sinyal yok" gibi gorunmemeli.
+        dsf = lambda text, rt: [{"id": "77", "name": "GAZİ ÜNİVERSİTESİ"}]  # noqa: E731
+        result = resolve(
+            "gazi üniversitesi istatistik bölümü",
+            search_fn=lambda text, rt, **kw: [] if rt == "parent" else _fake_search_fn(text, rt, **kw),
+            search_knn_fn=_fake_search_knn_fn,
+            cosine_fn=_no_cosine_fn,
+            decompose_search_fn=dsf,
+            fetch_docs_fn=lambda ids: {},  # mget hicbir sey donduremedi
+        )
+        injected = next(c for c in result.parents if c.id == "77")
+        assert injected.raw.get("signals_incomplete") is True
+        assert injected.name == "GAZİ ÜNİVERSİTESİ"
+        assert injected.exact_match is True  # kanonik ad yine de sorguda geciyor
 
 
 class TestResolveSignals:

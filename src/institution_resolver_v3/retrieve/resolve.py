@@ -48,6 +48,15 @@ PoolSearchFn = Callable[..., list[dict[str, Any]]]
 # (arama metni, kNN listesine girememis hit'ler) -> {raw id -> kosinus}
 CosineFn = Callable[[str, list[dict[str, Any]]], dict[str, float]]
 
+# (belge _id listesi, "record_type:id") -> {raw id -> _source sozlugu}
+FetchDocsFn = Callable[[list[str]], dict[str, dict[str, Any]]]
+
+
+def _default_fetch_docs(doc_ids: list[str]) -> dict[str, dict[str, Any]]:
+    from institution_resolver_v3.elastic.search import fetch_documents
+
+    return fetch_documents(doc_ids)
+
 
 def _default_cosine_fn(text: str, hits: list[dict[str, Any]]) -> dict[str, float]:
     """Havuza girip kNN top-K'da gorunmeyen adaylarin kosinusunu HESAPLAR.
@@ -294,6 +303,7 @@ def _parent_union(
     search_fn: PoolSearchFn,
     search_knn_fn: PoolSearchFn,
     cosine_fn: CosineFn,
+    fetch_docs_fn: FetchDocsFn,
 ) -> list[ScoredCandidate]:
     """Her hipotezin kurum kismiyla ayri parent aramasi; recall-guvenli birlesim.
 
@@ -335,37 +345,62 @@ def _parent_union(
 
     # Hipotezin isaret ettigi parent, havuz aramalarinin top-K'sina girmemis
     # olabilir (canli ornek: "JAMSTEC," aramasinda dogru kayit rank 7'de, kisa
-    # fuzzy-junk adlar ustte) - hakemin degerlendirebilmesi icin asgari
-    # sinyallerle enjekte edilir (bm25_norm=0.0: listeye girmedi; cosine=None:
-    # olculmedi).
-    query_norm = normalize(query).base_no_accent
-    query_tokens = query_norm.split()
-    query_quals = extract_qualifiers(query)
+    # fuzzy-junk adlar ustte) - hakemin degerlendirebilmesi icin enjekte edilir.
+    #
+    # Sinyaller, havuzdan gelen adaylarla AYNI fonksiyondan (`_attach_signals`)
+    # uretilir. Eskiden burada elle kuruluyordu ve yalniz KANONIK ADA bakiyordu;
+    # adayin alias'lari hic gorulmedigi icin sorguyla BIREBIR ortusen bir alias
+    # sinyal uretmiyordu. Olculen sonuc (2026-08-07, 500 sorgu): 93 sorguda 119
+    # aday hak ettigi `exact_match`i alamiyordu ve 5 sorguda gate'in karari
+    # bozuluyordu. Somut vaka: "... University of Health Sciences ... Adana" ->
+    # dogru kayit (SAĞLIK BİLİMLERİ ÜNİVERSİTESİ, alias'i "UNIVERSITY OF HEALTH
+    # SCIENCES") tsr=34.4/exact=False aliyor, tek guclu exact olarak Somali'deki
+    # es-adli kayit kaliyor ve gate ona `auto_match` veriyordu. Duzeltmeyle
+    # havuzda IKI guclu exact olusuyor -> `any_rival_blocks_auto` devreye girip
+    # `ambiguous` diyor (2026-07-30 kullanici karari boylece gercekten calisiyor;
+    # once sessizce devre disi kaliyordu).
+    #
+    # bm25_norm=0.0 KORUNUR (bos bm25 haritasi): aday havuz aramasinin listesine
+    # GIRMEDI, bu bilgi kaybolmamali.
+    pending: list[tuple[str, str, Any]] = []  # (pid, hipotezdeki ad, hipotez)
     for hyp in decomposed.hypotheses or []:
         pid = hyp.matched_parent_id
-        name = hyp.matched_parent_name or ""
         if pid is None or pid in ids_seen:
             continue
         ids_seen.add(pid)
-        # enjekte adayin kosinusu da hesaplanir (raw'da embedding yok -> mget yolu);
-        # hesaplanamazsa None kalir ("vektor yok/alinamadi").
-        cos_map = cosine_fn(hyp.institution_part, [{"id": pid, "record_type": "parent"}])
-        inj_name_norm = normalize(name).base_no_accent
-        inj_exact = _contains_exact(query_tokens, inj_name_norm)
-        union.append(
-            ScoredCandidate(
-                id=pid,
-                record_type="parent",
-                name=name,
-                raw={"id": pid, "record_type": "parent", "name": name, "from_hypothesis_only": True},
-                bm25_norm=0.0,
-                cosine=cos_map.get(pid),
-                token_set_ratio=fuzz.token_set_ratio(query_norm, inj_name_norm),
-                qualifier_conflict=qualifiers_conflict(query_quals, extract_qualifiers(name)),
-                exact_match=inj_exact,
-                exact_match_text=(inj_name_norm if inj_exact else None),
-            )
+        pending.append((pid, hyp.matched_parent_name or "", hyp))
+    if not pending:
+        return union
+
+    # Tek mget: hipotez basina ayri cagri YOK.
+    fetched = fetch_docs_fn([f"parent:{pid}" for pid, _, _ in pending])
+
+    hits: list[dict[str, Any]] = []
+    knn_by_id: dict[str, float] = {}
+    for pid, hyp_name, hyp in pending:
+        doc = fetched.get(pid)
+        if doc:
+            hit = {**doc, "id": pid, "record_type": "parent", "from_hypothesis_only": True}
+        else:
+            # Belge cekilemedi (bayat hipotez id'si / mget eksigi): eski davranisa
+            # geri dus - ad-yalniz asgari aday. Kaydin alias'lari gorulemedigi icin
+            # bu adayin sinyalleri EKSIK kalir, `from_hypothesis_only` disinda ayrica
+            # `signals_incomplete` ile isaretlenir (sessiz degradasyon olmasin).
+            hit = {
+                "id": pid, "record_type": "parent", "name": hyp_name,
+                "from_hypothesis_only": True, "signals_incomplete": True,
+            }
+        hits.append(hit)
+        # Kosinus hipotezin KENDI kurum-kismina gore olculur (eski davranis aynen);
+        # hesaplanamazsa knn haritasina girmez -> cosine None kalir.
+        for cid, cos in cosine_fn(hyp.institution_part, [hit]).items():
+            knn_by_id[cid] = (cos + 1.0) / 2.0
+
+    union.extend(
+        _attach_signals(
+            hits, bm25_by_id={}, knn_by_id=knn_by_id, max_bm25=1.0, query_text=query
         )
+    )
     return union
 
 
@@ -395,6 +430,7 @@ def resolve(
     search_knn_fn: PoolSearchFn = _default_search_knn,
     decompose_search_fn: Callable[[str, str], list[dict[str, Any]]] | None = None,
     cosine_fn: CosineFn = _default_cosine_fn,
+    fetch_docs_fn: FetchDocsFn = _default_fetch_docs,
 ) -> ResolveResult:
     """Coklu-hipotezli, recall-yonelimli cascade: her hipotezle parent ara ve
     birlestir, subunit'i makul parent'larin tamamiyla (terms) filtrele +
@@ -414,7 +450,7 @@ def resolve(
 
     parents = _parent_union(
         decomposed, query, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn,
-        cosine_fn=cosine_fn,
+        cosine_fn=cosine_fn, fetch_docs_fn=fetch_docs_fn,
     )
 
     cascade_ids = _cascade_parent_ids(parents, decomposed)

@@ -235,6 +235,48 @@ def fetch_embeddings(
     return out
 
 
+# Hipotez-enjeksiyonuyla havuza giren adaylar icin cekilen alanlar. `embedding`
+# BILEREK YOK: kosinus yolu (retrieve/resolve.py cosine_fn) vektoru kendi mget'iyle
+# ayrica aliyor; buraya eklemek her enjekte aday icin 768 ondalik sayiyi bosuna
+# tasirdi. Liste `_attach_signals` + `judge/candidates.py` tuketicilerine gore
+# secildi (aliases: exact/tsr icin ZORUNLU; country/city/kind_label_raw/parent_name:
+# hakemin baglam alanlari).
+INJECTED_SOURCE_FIELDS = [
+    "id", "name", "aliases", "country", "city", "parent_id", "kind_label_raw", "parent_name",
+]
+
+
+def fetch_documents(
+    doc_ids: list[str],
+    *,
+    client: Elasticsearch | None = None,
+    index: str | None = None,
+    source_includes: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Belge `_id`'lerinden ("record_type:id") `_source` sozluklerini ceker (mget).
+
+    Doner: {raw id -> _source}. Bulunamayan belgeler sozlukte YER ALMAZ (cagiran
+    taraf eksigi kendi bilir - bkz. retrieve/resolve.py enjeksiyon yolu, orada
+    ad-yalniz asgari adaya geri duser).
+
+    `fetch_embeddings`ten farki: o yalnizca vektor alanini ceker (kosinus
+    doldurma icin), bu ise adayin ESLESME SINYALLERINI uretecek alanlari
+    (ozellikle `aliases`) ceker.
+    """
+    if not doc_ids:
+        return {}
+    client = client or get_client()
+    index = index or es_config()["index"]
+    resp = client.mget(
+        index=index, ids=doc_ids, source_includes=source_includes or INJECTED_SOURCE_FIELDS
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for d in resp["docs"]:
+        if d.get("found") and d.get("_source", {}).get("id"):
+            out[d["_source"]["id"]] = d["_source"]
+    return out
+
+
 def rrf_merge(
     rank_lists: list[list[dict[str, Any]]], *, k: int = 60, size: int = 50
 ) -> list[dict[str, Any]]:
