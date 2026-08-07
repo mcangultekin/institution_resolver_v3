@@ -58,6 +58,38 @@ def _default_fetch_docs(doc_ids: list[str]) -> dict[str, dict[str, Any]]:
     return fetch_documents(doc_ids)
 
 
+def _no_cosine_fn(text: str, hits: list[dict[str, Any]]) -> dict[str, float]:
+    """VARSAYILAN (2026-08-07): kNN top-K'ya girmemis adaylar icin kosinus HESAPLANMAZ.
+
+    Atlanan is: sorgu basina bir `encode_query` + havuz basina bir `mget` + aday
+    basina numpy islemi.
+
+    NEDEN GUVENLI - bu deger HICBIR karar yoluna girmiyor. Kod okumasiyla degil,
+    500 sorguda kosinus ACIK/KAPALI kosulup OLCULDU (2026-08-07); 4.324 adayin
+    kosinusu kaybolmasina ragmen su dortu de FARKSIZ cikti:
+      - havuz kimlikleri ve SIRASI            0/500 fark
+      - kosinus disi tum sinyaller            0/500 fark
+      - gate karari (verdict+id+confidence)   0/500 fark
+      - hakem prompt'u + semasi (sha256)      0/500 fark
+    Sonuncusu belirleyici: LLM'in gordugu girdi BYTE-DENK oldugu icin hakem
+    karari da degisemez. (Kosinus prompt'tan 2026-07-27'de cikarilmisti - e5-base
+    anizotropik: alakasiz metin bile ~0.80 aliyor.)
+
+    Havuz SIRASI da etkilenmez cunku RRF ham bm25/knn listeleriyle calisir;
+    `cosine_fn` ondan SONRA kosar ve yalnizca `knn_by_id` sozlugunu doldurur.
+
+    NE KALIYOR: kNN retrieval AYNEN calisir - vektor kanali havuza aday sokmaya
+    devam eder (parent havuzunun %16.2'si SADECE o kanaldan geliyor). kNN top-K'ya
+    girenler kosinuslerini BEDAVA almaya devam eder (ES skorundan 2s-1); bu
+    fonksiyon yalnizca "listede yoktu, ayrica hesaplayalim" adimini atlar.
+    `cosine=None` boylece "kNN listesine girmedi" anlamina doner.
+
+    Gosterim gerektiginde `resolve(..., with_cosine=True)` (CLI `--cosine`,
+    API `with_cosine`) eski davranisi geri getirir.
+    """
+    return {}
+
+
 def _default_cosine_fn(text: str, hits: list[dict[str, Any]]) -> dict[str, float]:
     """Havuza girip kNN top-K'da gorunmeyen adaylarin kosinusunu HESAPLAR.
 
@@ -429,13 +461,23 @@ def resolve(
     search_fn: PoolSearchFn = _default_search,
     search_knn_fn: PoolSearchFn = _default_search_knn,
     decompose_search_fn: Callable[[str, str], list[dict[str, Any]]] | None = None,
-    cosine_fn: CosineFn = _default_cosine_fn,
+    with_cosine: bool = False,
+    cosine_fn: CosineFn | None = None,
     fetch_docs_fn: FetchDocsFn = _default_fetch_docs,
 ) -> ResolveResult:
     """Coklu-hipotezli, recall-yonelimli cascade: her hipotezle parent ara ve
     birlestir, subunit'i makul parent'larin tamamiyla (terms) filtrele +
-    filtresizle birlestir (recall-guvenli), her adaya sinyal ekle (kosinus
-    dahil - kNN listesine girmeyenler icin cosine_fn ile hesaplanir)."""
+    filtresizle birlestir (recall-guvenli), her adaya sinyal ekle.
+
+    `with_cosine` (VARSAYILAN KAPALI): kNN top-K'ya girmemis adaylar icin
+    kosinusu AYRICA hesaplama adimi. Kapaliyken o adaylarda `cosine=None` kalir
+    ("kNN listesine girmedi"); kNN'e girenler kosinusunu bedava almaya devam
+    eder. Gerekce ve 500-sorgu olcumu `_no_cosine_fn` docstring'inde.
+
+    `cosine_fn` ACIKCA verilirse `with_cosine`den BAGIMSIZ olarak o kullanilir
+    (testler sahte fonksiyon enjekte ediyor - eski sozlesme korunur)."""
+    if cosine_fn is None:
+        cosine_fn = _default_cosine_fn if with_cosine else _no_cosine_fn
     dsf = decompose_search_fn or (lambda text, rt: search_fn(text, rt, size=10))
     # decompose'un O(n^2) span aramasini tek msearch'e topla - AMA yalnizca
     # standart ES yolunda (ozel search_fn/decompose_search_fn enjekte edilmediyse;

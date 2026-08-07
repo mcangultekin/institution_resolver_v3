@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 
 from institution_resolver_v3.normalize.abbreviations import expand_known_abbreviations
 
@@ -180,9 +181,18 @@ def expand_query_text(text: str, locale: str | None = None) -> str:
 # --------------------------------------------------------------------------
 # 6) Tam normalizasyon: anahtar (keyword) alan uretimi icin
 # --------------------------------------------------------------------------
-@dataclass
+@dataclass(frozen=True)
 class NormalizedName:
     """Bir kurum/birim isminin ya da sorgunun tam normalizasyon sonucu.
+
+    `frozen=True`: `normalize()` cache'li oldugu icin AYNI ornek cok sayida
+    cagriya paylasilir - yerinde degistirilebilseydi tek bir tuketicinin
+    mutasyonu cache'i zehirler, uzaktaki baska bir cagriyi sessizce bozardi.
+    Ayni tuzak `embedding/query_encoder.py`'de vektorun read-only
+    isaretlenmesiyle kapatilmisti; buradaki karsiligi budur. Kod tabaninda bu
+    nesnenin alanlarina atama yapan tek satir YOK (src+tests tarandi, 2026-08-07)
+    - `frozen` mevcut bir davranisi kisitlamiyor, gelecekteki bir hatayi
+    imkansiz kiliyor.
 
     Alanlar:
         raw:            orijinal, dokunulmamis girdi.
@@ -203,6 +213,7 @@ class NormalizedName:
         return self.base.split(" ") if self.base else []
 
 
+@lru_cache(maxsize=100_000)
 def normalize(
     raw_text: str,
     *,
@@ -210,6 +221,21 @@ def normalize(
     expand_abbreviations: bool = True,
 ) -> NormalizedName:
     """Butun normalizasyon adimlarini sirayla uygulayan ana giris noktasi.
+
+    CACHE'LI (2026-08-07). Saf fonksiyon: girdi -> cikti deterministik, yan etki
+    yok, donen nesne `frozen`. Tum argumanlar hashlenebilir (str / str|None / bool).
+
+    NEDEN: ayni katalog string'i tek bir sorgu icinde defalarca normalize
+    ediliyordu - `decompose` her span x her hit x her ad-varyanti icin,
+    `_attach_signals` her aday x her alias icin cagiriyor; span taramasi O(n^2)
+    oldugu icin ayni parent'in ayni alias'i onlarca kez yeniden isleniyor.
+    OLCULDU (2026-08-07, 40 gercek sorgu): 82.927 cagri / 6.902 benzersiz girdi
+    = 12.0x tekrar, yani isin %91,7'si gereksiz. Tek bir string ("Ege
+    Universitesi Tip Fakultesi Hastanesi") 442 kez normalize ediliyordu.
+
+    BEKLENEN KAZANC KUCUK: `normalize` toplam sorgu suresinin ~%5'i (geri kalani
+    ES round-trip'i), dolayisiyla tavan ~%4-5. Bu kalem "ucuz ve risksiz" oldugu
+    icin alinir, buyuk hizlanma icin degil.
 
     Adim sirasi kasitli:
     1. Unicode NFKC normalizasyonu (bilesik/ayrik aksan karakterlerini

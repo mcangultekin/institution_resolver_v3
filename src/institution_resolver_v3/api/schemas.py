@@ -15,6 +15,11 @@ Verdict = Literal["auto_match", "review", "ambiguous", "no_match"]
 class QueryRequest(BaseModel):
     query: str
     top: int = 5
+    # Yalniz GOSTERIM: kNN top-K'ya girmemis adaylar icin kosinusu ayrica
+    # hesapla. Varsayilan KAPALI - deger hicbir karara girmiyor (500 sorguda
+    # olculdu, bkz. retrieve/resolve.py `_no_cosine_fn`). Kapaliyken o
+    # adaylarda `cosine: null` doner ("kNN listesine girmedi").
+    with_cosine: bool = False
 
 
 class JudgeQueryRequest(QueryRequest):

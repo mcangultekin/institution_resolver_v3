@@ -18,7 +18,7 @@ from institution_resolver_v3.judge.client import LlmError
 from institution_resolver_v3.judge.judge import JudgeValidationError
 
 
-def _fake_resolve(query, size=5):
+def _fake_resolve(query, size=5, **kw):  # **kw: with_cosine gibi gosterim bayraklarini yutar
     parent = NS(
         id="P1", name="EGE UNIVERSITESI", bm25_norm=0.9, cosine=0.5,
         token_set_ratio=95.0, exact_match=True, passed_parent_filter=None,
@@ -59,7 +59,7 @@ def _fake_judge_llm_error(result, client):
     raise LlmError("baglanti koptu")
 
 
-def _fake_decide_gate_only(query, client, size=5):
+def _fake_decide_gate_only(query, client, size=5, **kw):  # **kw: with_cosine gibi gosterim bayraklarini yutar
     result = _fake_resolve(query, size=size)
     g = _fake_gate(result)
     return NS(
@@ -73,7 +73,7 @@ def _fake_decide_gate_only(query, client, size=5):
     )
 
 
-def _fake_decide_error(query, client, size=5):
+def _fake_decide_error(query, client, size=5, **kw):  # **kw: with_cosine gibi gosterim bayraklarini yutar
     raise JudgeValidationError("çelişkili cevap")
 
 

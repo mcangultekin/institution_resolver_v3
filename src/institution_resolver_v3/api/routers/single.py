@@ -110,7 +110,7 @@ def _gate_response(result, verdict) -> GateResponse:
 
 @router.post("/match", response_model=MatchResponse)
 def match(req: QueryRequest, resolve_fn: Callable = Depends(get_resolve_fn)) -> MatchResponse:
-    result = resolve_fn(req.query, size=req.top)
+    result = resolve_fn(req.query, size=req.top, with_cosine=req.with_cosine)
     d = result.decomposed
     sources = d.hypotheses or [d]  # hipotez yoksa birincil alanlar (bkz. decompose.py)
     hyps = [
@@ -137,7 +137,7 @@ def gate_endpoint(
     resolve_fn: Callable = Depends(get_resolve_fn),
     gate_fn: Callable = Depends(get_gate_fn),
 ) -> GateResponse:
-    result = resolve_fn(req.query, size=req.top)
+    result = resolve_fn(req.query, size=req.top, with_cosine=req.with_cosine)
     verdict = gate_fn(result)
     return _gate_response(result, verdict)
 
@@ -155,7 +155,7 @@ def judge_endpoint(
     judge_fn: Callable = Depends(get_judge_fn),
     ollama_client: LlmClient = Depends(get_ollama_client),
 ) -> JudgeResponse:
-    result = resolve_fn(req.query, size=req.top)
+    result = resolve_fn(req.query, size=req.top, with_cosine=req.with_cosine)
     client = _judge_client(req, ollama_client)
     try:
         verdict = judge_fn(result, client)
@@ -196,7 +196,7 @@ def decide_endpoint(
 ) -> DecideResponse:
     client = _judge_client(req, ollama_client)
     try:
-        d = decide_fn(req.query, client, size=req.top)
+        d = decide_fn(req.query, client, size=req.top, with_cosine=req.with_cosine)
     except (JudgeValidationError, LlmError) as exc:
         raise HTTPException(status_code=502, detail=_error_detail(exc)) from None
     return DecideResponse(

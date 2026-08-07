@@ -57,14 +57,18 @@ def decide(
     client: LlmClient,
     *,
     size: int = 5,
+    with_cosine: bool = False,
     resolve_fn: Callable = _resolve,
     gate_fn: Callable = _gate,
     judge_fn: Callable = _judge,
     config: dict[str, Any] | None = None,
 ) -> DecideResult:
     """resolve() -> gate(); ikisi de (parent + varsa subunit) auto_match ise
-    LLM hic cagrilmaz. Degilse judge() cagrilir, nihai karar judge'den gelir."""
-    result = resolve_fn(query, size=size)
+    LLM hic cagrilmaz. Degilse judge() cagrilir, nihai karar judge'den gelir.
+
+    `with_cosine`: yalnizca GOSTERIM icin resolve()'a gecirilir (kosinus hicbir
+    karara girmez, bkz. retrieve/resolve.py `_no_cosine_fn`)."""
+    result = resolve_fn(query, size=size, with_cosine=with_cosine)
     g = gate_fn(result, config=config)
 
     if not _needs_llm(g):

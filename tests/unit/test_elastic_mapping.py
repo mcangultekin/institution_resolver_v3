@@ -227,3 +227,56 @@ def test_rrf_prefers_items_in_both_lists() -> None:
     knn = [{"id": "X"}, {"id": "only_knn"}]
     out = rrf_merge([bm25, knn], size=10)
     assert out[0]["id"] == "X"                 # iki listede de var -> en yuksek
+
+
+# --------------------------------------------------------------------------- #
+# B2 (2026-08-07): arama yanitinda `_source` KARA listesi. Buradaki testler iki
+# seyi birden sabitler: (1) yuku tasiyan alanlar geri gonderilmiyor, (2) filtre
+# ARAMAYI etkilemiyor ve tuketicilerin okudugu alanlar duruyor.
+# --------------------------------------------------------------------------- #
+def test_pool_source_excludes_heavy_fields() -> None:
+    """Yuku tasiyan iki alan yanittan cikarilir.
+
+    Olculdu (parent:143): belge 17.597 B, `embedding` 16.970 B (%96,4),
+    Python'un okudugu toplam 168 B (%1).
+    """
+    from institution_resolver_v3.elastic.search import POOL_SOURCE_EXCLUDES
+
+    assert "embedding" in POOL_SOURCE_EXCLUDES
+    assert "alias_variants" in POOL_SOURCE_EXCLUDES
+
+
+def test_pool_source_is_a_blacklist_not_a_whitelist() -> None:
+    """KARA liste olmali - beyaz liste sessiz kayip uretir.
+
+    Beyaz listede ("sadece sunlari gonder") listelenmeyen alan hata vermeden
+    `None` dondugu icin API yanitindan sessizce duserdi: `api/routers/single.py`
+    `parent_record`/`subunit_record` alanlarinda `ScoredCandidate.raw`'i OLDUGU
+    GIBI donduruyor. Bu test, tuketicilerin okudugu ve cikti sozlesmesinde yer
+    alan alanlarin kara listeye YANLISLIKLA eklenmemesini sabitler.
+    """
+    from institution_resolver_v3.elastic.search import POOL_SOURCE_EXCLUDES
+
+    korunmasi_gerekenler = {
+        # `_attach_signals` / decompose / gate / resolve / candidates okuyor
+        "id", "record_type", "name", "aliases",
+        "parent_id", "parent_name", "country", "city", "kind_label_raw",
+        # dogrudan okunmuyor ama API yanitinda ve cikti sozlesmesinde var
+        "canonical_ref", "merged_ids", "normalized_name", "active_override",
+    }
+    assert korunmasi_gerekenler.isdisjoint(POOL_SOURCE_EXCLUDES)
+
+
+def test_excluded_fields_are_still_searched() -> None:
+    """Kritik ayrim: `_source` filtresi ARAMAYI etkilemez.
+
+    Arama ters indekste yapilir; `_source` yalnizca "bulunan belgeyi geri ver"
+    kismidir. `alias_variants` parent kanalinda SORGULANMAYA devam eder (yanitta
+    donmese de), `embedding` de kNN ile aranmaya devam eder.
+    """
+    from institution_resolver_v3.elastic.search import POOL_SOURCE_EXCLUDES, build_knn_query
+
+    assert "alias_variants" in POOL_SOURCE_EXCLUDES
+    assert "alias_variants" in str(build_search_query("gazi", "parent"))
+    assert "embedding" in POOL_SOURCE_EXCLUDES
+    assert build_knn_query([0.0], "parent", k=5, num_candidates=100)["field"] == "embedding"

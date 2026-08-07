@@ -27,6 +27,39 @@ _SUBUNIT_FIELDS = ["name^3", "name.ascii^2", "aliases_text^1.5", "aliases_text.a
 _PARENT_ALIAS_VARIANT_FIELDS = ["alias_variants.value^2", "alias_variants.value.ascii^1.3"]
 
 
+# Arama yanitinda GERI GONDERILMEYEN alanlar (2026-08-07).
+#
+# KARA liste, beyaz liste DEGIL - bilincli tercih. Beyaz liste ("sadece sunlari
+# gonder") listelenmeyen her alani SESSIZCE dusurur: hata vermez, `None` doner.
+# Somut bedeli olculdu - `api/routers/single.py:_record_of` yanitta `c.raw`'i
+# OLDUGU GIBI donduruyor (`parent_record`/`subunit_record`, uc endpoint'te), yani
+# beyaz listede `canonical_ref` (ROR baglantisi), `merged_ids` (cikti sozlesmesinde
+# var, `eval/__init__.py` grup-farkindalikli metrigi ona bagli), `normalized_name`
+# ve `active_override` API'den sessizce kaybolurdu. Kara listede yalnizca ADI
+# YAZILAN alan duser.
+#
+# Hiz farki YOK (olculdu, 91 span'lik gercek sorgu): filtresiz 411,5 ms ->
+# kara liste 244,4 ms -> beyaz liste 250,2 ms. Yani beyaz listenin sessiz-kayip
+# riskini almanin bir karsiligi yok.
+#
+# NEDEN GEREKLI (olculdu, parent:143): belge 17.597 B, Python'un okudugu 168 B
+# (%1). Kalanin %96,4'u `embedding` (768 ondalik sayi, JSON metni olarak).
+# Sorgu basina 12-16 ES cagrisi x bu yuk = megabaytlarca okunmayan veri.
+#
+# KRITIK AYRIM: `_source` filtresi ARAMAYI ETKILEMEZ. Arama ters indekste yapilir;
+# `_source` yalnizca "bulunan belgeyi geri ver" kismidir. `embedding` kNN ile
+# ARANMAYA, `alias_variants` parent kanalinda SORGULANMAYA aynen devam eder -
+# sadece yanitta tasinmazlar. (tests/unit/test_elastic_mapping.py bunu sabitler.)
+#
+# `embedding`: hicbir KARAR yolu kosinus kullanmiyor (500 sorguda olculdu, bkz.
+#   retrieve/resolve.py `_no_cosine_fn`). Gosterim gerekirse `with_cosine=True`
+#   vektoru ayrica mget ile ceker.
+# `alias_variants`: parent aramasinin nested kanali; `_source`'tan hicbir yerde
+#   okunmuyor (tuketici taramasi 2026-08-07). Esleme sinyalleri duz `aliases`
+#   listesinden uretilir - o LISTEDE KALIR.
+POOL_SOURCE_EXCLUDES = ["embedding", "alias_variants"]
+
+
 def _multi_match(text: str, fields: list[str]) -> dict[str, Any]:
     return {
         "multi_match": {
@@ -116,6 +149,7 @@ def search(
         size=size,
         query=build_search_query(prepared, record_type, extra_filters=extra_filters),
         sort=[{"_score": {"order": "desc"}}, {"id": {"order": "asc"}}],  # determinizm
+        source_excludes=POOL_SOURCE_EXCLUDES,  # bkz. POOL_SOURCE_EXCLUDES notu
     )
     return [{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
 
@@ -150,6 +184,7 @@ def search_many(
                 "size": size,
                 "query": query(expand_query_text(text), record_type, extra_filters=extra_filters),
                 "sort": [{"_score": {"order": "desc"}}, {"id": {"order": "asc"}}],
+                "_source": {"excludes": POOL_SOURCE_EXCLUDES},  # bkz. POOL_SOURCE_EXCLUDES notu
             }
         )
     resp = client.msearch(body=body)
@@ -207,6 +242,7 @@ def search_knn(
         knn=build_knn_query(
             qvec, record_type, k=size, num_candidates=max(100, size * 2), extra_filters=extra_filters
         ),
+        source_excludes=POOL_SOURCE_EXCLUDES,  # bkz. POOL_SOURCE_EXCLUDES notu
     )
     return [{"id": h["_id"], "score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
 

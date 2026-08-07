@@ -74,11 +74,15 @@ def index_cmd(
 def match_cmd(
     query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
     top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+    cosine: bool = typer.Option(
+        False, "--cosine",
+        help="kNN'e girmemis adaylar icin de kosinus HESAPLA (yavas; yalniz gosterim - karara GIRMEZ, bkz. resolve._no_cosine_fn)",
+    ),
 ) -> None:
     """Tek sorgu: decompose + parent-first cascade + sinyaller (retrieve.resolve)."""
     from institution_resolver_v3.retrieve.resolve import resolve
 
-    result = resolve(query, size=top)
+    result = resolve(query, size=top, with_cosine=cosine)
     d = result.decomposed
     typer.echo("decompose hipotezleri (secim yok, hepsi havuza katilir):")
     for i, h in enumerate(d.hypotheses or []):
@@ -116,6 +120,10 @@ def match_cmd(
 def gate_cmd(
     query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
     top: int = typer.Option(5, "--top", help="her havuzdan kac aday (havuz buyuklugu)"),
+    cosine: bool = typer.Option(
+        False, "--cosine",
+        help="kNN'e girmemis adaylar icin de kosinus HESAPLA (yavas; yalniz gosterim - karara GIRMEZ, bkz. resolve._no_cosine_fn)",
+    ),
 ) -> None:
     """Tek sorgu: resolve() + LLM'siz deterministik triyaj (gate). Tek cevap +
     guven kovasi (auto_match/review/ambiguous/no_match). LLM KULLANILMAZ."""
@@ -125,7 +133,7 @@ def gate_cmd(
     from institution_resolver_v3.retrieve.resolve import resolve
 
     t0 = time.time()
-    result = resolve(query, size=top)
+    result = resolve(query, size=top, with_cosine=cosine)
     verdict = run_gate(result)
     dt = time.time() - t0
 
@@ -163,6 +171,10 @@ def judge_cmd(
     query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
     model: str = typer.Option(None, "--model", help="Ollama model tag (varsayilan: config judge.model)"),
     top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+    cosine: bool = typer.Option(
+        False, "--cosine",
+        help="kNN'e girmemis adaylar icin de kosinus HESAPLA (yavas; yalniz gosterim - karara GIRMEZ, bkz. resolve._no_cosine_fn)",
+    ),
 ) -> None:
     """Tek sorgu: retrieve.resolve() + LLM hakem (F4, Ollama/Gemma - Claude KULLANILMIYOR)."""
     import time
@@ -176,7 +188,7 @@ def judge_cmd(
     client = OllamaClient(model=model or cfg["model"], host=cfg["host"])
 
     t0 = time.time()
-    result = resolve(query, size=top)
+    result = resolve(query, size=top, with_cosine=cosine)
     t1 = time.time()
     try:
         verdict = run_judge(result, client)
@@ -217,6 +229,10 @@ def decide_cmd(
     query: str = typer.Argument(..., help="serbest metin kurum ifadesi"),
     model: str = typer.Option(None, "--model", help="Ollama model tag (varsayilan: config judge.model)"),
     top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+    cosine: bool = typer.Option(
+        False, "--cosine",
+        help="kNN'e girmemis adaylar icin de kosinus HESAPLA (yavas; yalniz gosterim - karara GIRMEZ, bkz. resolve._no_cosine_fn)",
+    ),
 ) -> None:
     """Tek sorgu: HIBRIT karar - once gate (LLM'siz); parent VEYA subunit
     auto_match vermezse sorgunun tamami LLM hakeme devredilir (decide/decide.py).
@@ -233,7 +249,7 @@ def decide_cmd(
 
     t0 = time.time()
     try:
-        d = run_decide(query, client, size=top)
+        d = run_decide(query, client, size=top, with_cosine=cosine)
     except (JudgeValidationError, LlmError) as exc:
         typer.echo(f"HAKEM HATASI: {exc}", err=True)
         debug = getattr(exc, "debug", None)

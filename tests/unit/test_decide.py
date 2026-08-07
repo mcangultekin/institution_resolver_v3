@@ -19,7 +19,7 @@ def _gate_result(parent, subunit):
     return NS(query="q", parent=parent, subunit=subunit, unit_phrase="birim" if subunit else None)
 
 
-def _resolve_fn(query, size=5):
+def _resolve_fn(query, size=5, **kw):  # **kw: with_cosine gibi gosterim bayraklarini yutar
     return NS(query=query, parents=[NS(id="P1", name="EGE UNI")], subunits=[NS(id="S1", name="TIP")])
 
 
