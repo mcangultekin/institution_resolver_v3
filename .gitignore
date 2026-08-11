@@ -48,3 +48,8 @@ llm_cache/
 
 # R
 .Rhistory
+
+# Uretim envanteri: hangi kaydin (yazar/hakem/kullanici) hangi kuruma bagli
+# oldugunu satir satir tasiyor - gercek kisisel/kurumsal veri, versiyonlanmaz.
+# Normalize edilmis turevi de ayni veriyi tasir.
+institution-field-inventory*.csv

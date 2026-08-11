@@ -458,5 +458,90 @@ def batch_cmd(
     )
 
 
+@app.command("inventory-batch")
+def inventory_batch_cmd(
+    input_csv: str = typer.Argument(..., help="girdi CSV yolu (data/jobs/batch_input_parent_empty.csv)"),
+    query_col: str = typer.Option("query", "--query-col", help="sorgu metnini tasiyan kolon"),
+    out: str = typer.Option("inventory_sonuc.csv", "--out", help="sonuc CSV yolu"),
+    limit: int = typer.Option(None, "--limit", help="en fazla bu kadar girdi isle"),
+    resume: bool = typer.Option(False, "--resume", help="cikti varsa kaldigi yerden devam"),
+    judge: bool = typer.Option(
+        True, "--judge/--no-judge",
+        help="parent auto_match/no_match degilse LLM hakeme sor (--no-judge: gate-only)",
+    ),
+    model: str = typer.Option(None, "--model", help="Ollama model tag (varsayilan: config judge.model)"),
+    top: int = typer.Option(5, "--top", help="her havuzdan kac aday"),
+    workers: int = typer.Option(
+        1, "--workers",
+        help="es-zamanli isci sayisi (deney, 2026-08-11: 4'te ~2,2x, 8'de kazanc geriliyor)",
+    ),
+) -> None:
+    """Envanter modu: `institution-field-inventory.csv`'nin parent'i BOS satirlari.
+
+    Normal akistan farki (bkz. jobs/inventory.py): subunit hakemi TETIKLEMEZ
+    (yalniz gate auto_match ise karar yazilir), sorgu-ici toplu kodlama acik,
+    karara girmeyen en iyi aday da kaydedilir.
+    """
+    import csv as _csv
+
+    from institution_resolver_v3.jobs.inventory import run_inventory_batch
+
+    src = Path(input_csv)
+    if not src.exists():
+        typer.echo(f"Girdi CSV bulunamadi: {src}", err=True)
+        raise typer.Exit(code=1)
+
+    with src.open(newline="", encoding="utf-8") as f:
+        header = next(_csv.reader(f), [])
+    if query_col not in header:
+        typer.echo(f"'{query_col}' kolonu CSV'de yok. Mevcut kolonlar: {header}", err=True)
+        raise typer.Exit(code=1)
+
+    client = None
+    model_label = "YOK (gate-only)"
+    if judge:
+        from institution_resolver_v3.config import load_config
+        from institution_resolver_v3.judge.client import OllamaClient
+
+        cfg = load_config()["judge"]
+        model_label = model or cfg["model"]
+        client = OllamaClient(model=model_label, host=cfg["host"])
+
+    with src.open(newline="", encoding="utf-8") as fh:
+        rows = [
+            {
+                "query": (r.get(query_col) or "").strip(),
+                "normalized_name": r.get("normalized_name", ""),
+                "rows": r.get("rows", ""),
+            }
+            for r in _csv.DictReader(fh)
+        ]
+    rows = [r for r in rows if r["query"]]
+
+    def _progress(i: int, query: str, rec: dict) -> None:
+        if rec["status"] == "error":
+            tail = f"HATA: {rec['error'][:60]}"
+        else:
+            who = rec["parent_decided_by"] or "-"
+            sub = rec["subunit_id"] or f"({rec['subunit_verdict'] or '-'})"
+            tail = f"{rec['parent_verdict']}/{rec['parent_id'] or '-'} [{who}] | subunit={sub}"
+        typer.echo(f"[{i}] {query[:46]!r:<50} -> {tail}", err=True)
+
+    typer.echo(
+        f"Envanter modu basliyor: {src} ({len(rows)} sorgu, kolon='{query_col}', "
+        f"hakem={model_label}) -> {out}",
+        err=True,
+    )
+    summary = run_inventory_batch(
+        rows, out, client=client, judge_enabled=judge,
+        limit=limit, resume=resume, top=top, on_progress=_progress,
+        max_workers=workers,
+    )
+    typer.echo(
+        f"\nBITTI: ok={summary['ok']}  hata={summary['error']}  atlandi={summary['skipped']}"
+        f"  -> {summary['out']}"
+    )
+
+
 if __name__ == "__main__":
     app()

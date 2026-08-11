@@ -464,6 +464,7 @@ def resolve(
     with_cosine: bool = False,
     cosine_fn: CosineFn | None = None,
     fetch_docs_fn: FetchDocsFn = _default_fetch_docs,
+    encode_prewarm: bool = False,
 ) -> ResolveResult:
     """Coklu-hipotezli, recall-yonelimli cascade: her hipotezle parent ara ve
     birlestir, subunit'i makul parent'larin tamamiyla (terms) filtrele +
@@ -489,6 +490,21 @@ def resolve(
     else:
         dsm = lambda texts, rt: [dsf(t, rt) for t in texts]  # noqa: E731
     decomposed = decompose(query, search_fn=dsf, search_many_fn=dsm)
+
+    # (opsiyonel) Bu resolve()'da kNN icin kodlanacak TUM metinler decompose'dan
+    # sonra bellidir: her hipotezin kurum kismi + tam sorgu (subunit havuzlari).
+    # Onlari tek batch'te kodlayip tampona koyar; asagidaki aramalar transformer'a
+    # gitmez. VARSAYILAN KAPALI - vektorler batch'te ~3e-07 sapiyor (byte-denk
+    # degil), o yuzden cekirdek akis degismesin diye yalniz envanter modu acar.
+    if encode_prewarm:
+        from institution_resolver_v3.embedding.query_encoder import prewarm
+
+        texts = [
+            hyp.institution_part
+            for hyp in (decomposed.hypotheses or [decomposed])
+            if getattr(hyp, "institution_part", None)
+        ]
+        prewarm([*texts, query])
 
     parents = _parent_union(
         decomposed, query, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn,
