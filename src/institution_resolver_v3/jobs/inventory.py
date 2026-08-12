@@ -39,6 +39,7 @@ from institution_resolver_v3.eval.csv_runner import ProgressFn, run_csv_batch
 from institution_resolver_v3.gate.gate import GateDecision, GateResult
 from institution_resolver_v3.gate.gate import gate as _gate
 from institution_resolver_v3.judge.judge import judge as _judge
+from institution_resolver_v3.judge.schema import ParentDecision, SubunitDecision
 from institution_resolver_v3.retrieve.resolve import resolve as _resolve
 
 FIELDNAMES = [
@@ -105,7 +106,7 @@ def _blank_record(query: str) -> dict[str, str]:
 def _write_side(
     rec: dict[str, str],
     side: str,
-    decision: GateDecision | None,
+    decision: GateDecision | ParentDecision | SubunitDecision | None,
     pool: list,
     *,
     accepted: bool,
@@ -116,10 +117,16 @@ def _write_side(
     `accepted=True` -> karar kolonlarina; degilse yalniz `*_cand_*` adayina.
     Ikisi ayri tutuluyor ki "sistem ne dedi" ile "envantere ne yazilacak"
     birbirine karismasin.
+
+    `decision`, gate'ten (`GateDecision`, `confidence` alani var) ya da
+    hakemden (`ParentDecision`/`SubunitDecision`, `confidence` alani YOK -
+    sema bilerek sayisal guven tasimiyor) gelebilir - `getattr` ile
+    uydurmadan, hakem kararlarinda confidence kolonlari bos birakilir.
     """
     if decision is None:
         return
-    conf = f"{decision.confidence:.3f}"
+    conf_value = getattr(decision, "confidence", None)
+    conf = f"{conf_value:.3f}" if conf_value is not None else ""
     rec[f"{side}_verdict"] = decision.verdict
     if accepted and decision.matched_id:
         rec[f"{side}_id"] = decision.matched_id
