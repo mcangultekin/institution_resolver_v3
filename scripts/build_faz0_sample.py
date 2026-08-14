@@ -10,17 +10,25 @@ Ornekleme karar tipine gore HOMOJEN degil, kullanicinin verdigi kotalara gore
 ornekleme bu isi goremezdi - biçim hatasi havuzun %0,4'u, 120'lik bir orneklemde
 0,4 satir duserdi.
 
-Belirlenimci: sabit tohum + sinif icinde `query`'ye gore siralama. Ayni girdi
-ayni cikti - script tekrar kosulunca ayni 120 sorgu secilir.
+SECIM `random` KULLANMAZ, HASH TABANLIDIR: her sorgu `sha256(SEED|query)` ile
+siralanir, ilk `kota` tanesi alinir. Neden: bu set hem yerelde hem Kaggle'da
+(farkli Python surumleri) YENIDEN URETILEBILIR olmali - `random.sample`in ic
+algoritmasi surumler arasi degisebilir ve o zaman iki ortamda FARKLI 125 sorgu
+olcerdik, farki da fark etmezdik. sha256 platform/surum bagimsiz.
+
+Dogrulama: script sonunda secilen sorgularin toplu sha256'sini basar. Iki
+ortamda ayni sayi cikmiyorsa set ayni degildir - sessiz kaymaya yer yok.
 
 Kullanim:
     python3 scripts/build_faz0_sample.py
+    python3 scripts/build_faz0_sample.py --source /kaggle/input/.../kaggle_judge_sonuc.csv
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
-import random
+import hashlib
 import sys
 from pathlib import Path
 
@@ -28,13 +36,11 @@ csv.field_size_limit(sys.maxsize)  # result_json kolonu uzun
 
 SOURCE = Path("kaggle_judge_sonuc.csv")
 OUT = Path("data/eval/faz0_ornek_125.csv")
-SEED = 20260814
+SEED = "20260814"
 
-# (sinif adi, kota) - kullanici karari 2026-08-14.
-# SIRA ONEMLI: tek bir RNG akisi siradan tuketiliyor, dolayisiyla listenin
-# BASINA/ORTASINA sinif eklemek sonraki siniflarin secimini kaydirir. `review`
-# sonradan eklendigi icin (kullanici atlamis) SONA konuldu - onceki 120'lik
-# setin secimleri boylece birebir korundu.
+# (sinif adi, kota) - kullanici karari 2026-08-14. Secim hash tabanli oldugu
+# icin siniflar BIRBIRINDEN BAGIMSIZ: listeye sinif eklemek/cikarmak digerlerinin
+# secimini KAYDIRMAZ (RNG akisi paylasilmiyor).
 QUOTAS: list[tuple[str, int]] = [
     ("auto_match", 68),
     ("no_match", 30),
@@ -85,11 +91,22 @@ def classify(row: dict[str, str]) -> str | None:
     return row["parent_verdict"] or None
 
 
-def main() -> None:
-    if not SOURCE.exists():
-        sys.exit(f"Kaynak yok: {SOURCE}")
+def _rank(query: str) -> str:
+    """Surum/platform bagimsiz siralama anahtari (bkz. modul docstring'i)."""
+    return hashlib.sha256(f"{SEED}|{query}".encode("utf-8")).hexdigest()
 
-    with SOURCE.open(newline="", encoding="utf-8") as f:
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--source", default=str(SOURCE), help="hakem kosusu CSV'si")
+    ap.add_argument("--out", default=str(OUT))
+    args = ap.parse_args()
+    source, out_path = Path(args.source), Path(args.out)
+
+    if not source.exists():
+        sys.exit(f"Kaynak yok: {source}")
+
+    with source.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
     buckets: dict[str, list[dict[str, str]]] = {}
@@ -98,18 +115,17 @@ def main() -> None:
         if c:
             buckets.setdefault(c, []).append(r)
 
-    rng = random.Random(SEED)
     out_rows: list[dict[str, str]] = []
-    print(f"Kaynak: {SOURCE} ({len(rows)} satir)\n")
+    print(f"Kaynak: {source} ({len(rows)} satir)\n")
     print(f"{'sinif':<20} {'havuz':>6} {'kota':>5} {'agirlik':>8}")
     print("-" * 42)
 
     for name, quota in QUOTAS:
-        pool = sorted(buckets.get(name, []), key=lambda r: r["query"])  # belirlenimci taban
+        pool = buckets.get(name, [])
         if len(pool) < quota:
             print(f"UYARI: {name} havuzu {len(pool)}, kota {quota} - hepsi alindi")
             quota = len(pool)
-        picked = rng.sample(pool, quota)
+        picked = sorted(pool, key=lambda r: _rank(r["query"]))[:quota]
         weight = len(pool) / quota if quota else 0.0
         print(f"{name:<20} {len(pool):>6} {quota:>5} {weight:>8.1f}")
         for r in sorted(picked, key=lambda r: r["query"]):
@@ -135,15 +151,15 @@ def main() -> None:
                 }
             )
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    with OUT.open("w", newline="", encoding="utf-8") as f:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=FIELDNAMES)
         w.writeheader()
         w.writerows(out_rows)
 
     print("-" * 42)
     print(f"{'TOPLAM':<20} {'':>6} {len(out_rows):>5}")
-    print(f"\nCikti: {OUT}")
+    print(f"\nCikti: {out_path}")
 
     # --- akil saglami kontrolleri ---
     queries = [r["query"] for r in out_rows]
@@ -151,6 +167,11 @@ def main() -> None:
     etki = sum(int(r["rows"] or 0) for r in out_rows)
     print(f"Benzersiz sorgu: {len(set(queries))}")
     print(f"Temsil edilen envanter satiri: {etki:,}")
+
+    # Ortamlar arasi ozdeslik muhuru: yerelde ve Kaggle'da AYNI cikmali.
+    # Farkliysa iki ortamda farkli set olculuyor demektir (bkz. modul docstring'i).
+    muhur = hashlib.sha256("\n".join(sorted(queries)).encode("utf-8")).hexdigest()[:16]
+    print(f"ORNEKLEM MUHRU (sha256): {muhur}")
 
 
 if __name__ == "__main__":
