@@ -247,6 +247,38 @@ def _contains_exact(query_tokens: list[str], candidate_norm: str) -> bool:
     return any(query_tokens[i : i + n] == cand_tokens for i in range(len(query_tokens) - n + 1))
 
 
+# Tek-tokenlik bir ad/alias'in `exact_match` sayilabilmesi icin sorgunun en fazla
+# kac token olabilecegi (`strict_exact=True` iken). OLCULDU (2026-08-14, ayni 125
+# sorgu, yerel ES): 99 exact adayin 59'u (%60) tek-tokenlik, 26/125 sorgu (%21)
+# etkileniyor. Cakismalar tesadufi degil SISTEMATIK - kisa akronim alias'lari
+# yaygin kelimelerle carpisiyor:
+#     'tip'  -> Directorate for Technology, Innovation and Partnerships / TIP
+#               Technological Institute of the Philippines / TIP
+#               Textile Institute of Pakistan / TIP        (Turkce "Tıp"!)
+#     'on'   -> Opera Network / ON                          ("On sekiz Mart"!)
+#     'and'  -> Advanced Neural Dynamics / AND              (Ingilizce baglac, 4 sorgu)
+#     'su'   -> Suez University / SU                        ("Su Politikaları")
+#     'dr'   -> Decision Research / DR                      ("Dr." unvani)
+#     'ege', 'delta', 'sun', 'babu', 'art', 'sti' ...
+#
+# AYIRT EDICI OZELLIK sorgu payi: gercek akronim sorgularinda ('AFAD', 'JSGA',
+# 'Roketsan') eslesen token sorgunun TAMAMI; cakismalarda 1/6-1/9'u. Bu yuzden
+# kural "tek token mu" DEGIL "sorgunun ne kadarini kapsiyor" uzerine kuruldu -
+# duz bir yasak AFAD/JSGA gibi dogru calisan vakalari da oldururdu.
+SPAN1_MAX_QUERY_TOKENS = 2
+
+
+def _best_exact_text(query_tokens: list[str], name_norm: str, alias_norms: set[str]) -> str | None:
+    """Sorguda gecen ad/alias'lardan EN UZUNUNU dondurur (yoksa None).
+
+    Eskiden `name` once denenir, tuttuysa alias'lara hic bakilmazdi; ad tek
+    tokenlik jenerik bir sey olsa da uzun bir alias eslesmesi kaybediliyordu.
+    Uzunlugu secmek hem bu kaybi kapatir hem `exact_span`i daha durust yapar.
+    """
+    adaylar = [t for t in (name_norm, *alias_norms) if t and _contains_exact(query_tokens, t)]
+    return max(adaylar, key=lambda t: len(t.split()), default=None)
+
+
 def _attach_signals(
     hits: list[dict[str, Any]],
     *,
@@ -254,6 +286,7 @@ def _attach_signals(
     knn_by_id: dict[str, float],
     max_bm25: float,
     query_text: str,
+    strict_exact: bool = False,
 ) -> list[ScoredCandidate]:
     query_norm = normalize(query_text).base_no_accent
     query_tokens = query_norm.split()
@@ -287,14 +320,27 @@ def _attach_signals(
             [fuzz.token_set_ratio(query_norm, name_norm)]
             + [fuzz.token_set_ratio(query_norm, a) for a in alias_norms]
         )
-        exact_text = None
-        if _contains_exact(query_tokens, name_norm):
-            exact_text = name_norm
+        if strict_exact:
+            exact_text = _best_exact_text(query_tokens, name_norm, alias_norms)
+            # Tek-tokenlik eslesme yalniz KISA sorguda kanit sayilir (bkz.
+            # SPAN1_MAX_QUERY_TOKENS): 'AFAD' sorgusunda 'afad' gecerli, ama
+            # 12 kelimelik bir sorgudaki 'tıp'/'and'/'su' tesadufi carpismadir.
+            if (
+                exact_text is not None
+                and len(exact_text.split()) == 1
+                and len(query_tokens) > SPAN1_MAX_QUERY_TOKENS
+            ):
+                exact_text = None
         else:
-            for a in alias_norms:
-                if _contains_exact(query_tokens, a):
-                    exact_text = a
-                    break
+            # VARSAYILAN (uretim) yol - bayt-denk korunur.
+            exact_text = None
+            if _contains_exact(query_tokens, name_norm):
+                exact_text = name_norm
+            else:
+                for a in alias_norms:
+                    if _contains_exact(query_tokens, a):
+                        exact_text = a
+                        break
         exact = exact_text is not None
         out.append(
             ScoredCandidate(
@@ -336,6 +382,7 @@ def _parent_union(
     search_knn_fn: PoolSearchFn,
     cosine_fn: CosineFn,
     fetch_docs_fn: FetchDocsFn,
+    strict_exact: bool = False,
 ) -> list[ScoredCandidate]:
     """Her hipotezin kurum kismiyla ayri parent aramasi; recall-guvenli birlesim.
 
@@ -362,7 +409,8 @@ def _parent_union(
             search_fn=search_fn, search_knn_fn=search_knn_fn, cosine_fn=cosine_fn,
         )
         cands = _attach_signals(
-            merged, bm25_by_id=bm25, knn_by_id=knn, max_bm25=max_bm25, query_text=query
+            merged, bm25_by_id=bm25, knn_by_id=knn, max_bm25=max_bm25, query_text=query,
+            strict_exact=strict_exact,
         )
         budget = size if rank == 0 else ALT_HYPOTHESIS_CONTRIB
         added = 0
@@ -430,7 +478,8 @@ def _parent_union(
 
     union.extend(
         _attach_signals(
-            hits, bm25_by_id={}, knn_by_id=knn_by_id, max_bm25=1.0, query_text=query
+            hits, bm25_by_id={}, knn_by_id=knn_by_id, max_bm25=1.0, query_text=query,
+            strict_exact=strict_exact,
         )
     )
     return union
@@ -465,6 +514,7 @@ def resolve(
     cosine_fn: CosineFn | None = None,
     fetch_docs_fn: FetchDocsFn = _default_fetch_docs,
     encode_prewarm: bool = False,
+    strict_exact: bool = False,
 ) -> ResolveResult:
     """Coklu-hipotezli, recall-yonelimli cascade: her hipotezle parent ara ve
     birlestir, subunit'i makul parent'larin tamamiyla (terms) filtrele +
@@ -508,7 +558,7 @@ def resolve(
 
     parents = _parent_union(
         decomposed, query, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn,
-        cosine_fn=cosine_fn, fetch_docs_fn=fetch_docs_fn,
+        cosine_fn=cosine_fn, fetch_docs_fn=fetch_docs_fn, strict_exact=strict_exact,
     )
 
     cascade_ids = _cascade_parent_ids(parents, decomposed)
@@ -536,7 +586,8 @@ def resolve(
     knn_by_id = {**s_knn, **sf_knn}
     max_bm25 = max(s_max_bm25, sf_max_bm25)
     subunits = _attach_signals(
-        sub_merged_raw, bm25_by_id=bm25_by_id, knn_by_id=knn_by_id, max_bm25=max_bm25, query_text=query
+        sub_merged_raw, bm25_by_id=bm25_by_id, knn_by_id=knn_by_id, max_bm25=max_bm25,
+        query_text=query, strict_exact=strict_exact,
     )
 
     return ResolveResult(query=query, decomposed=decomposed, parents=parents, subunits=subunits)

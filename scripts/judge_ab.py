@@ -66,8 +66,39 @@ csv.field_size_limit(10_000_000)
 
 DEFAULT_SAMPLE = "data/eval/faz0_ornek_125.csv"
 
+# --- KOLLAR -----------------------------------------------------------------
+# Bir "kol" = prompt varyanti + RETRIEVAL/GORUNUM ayari. Prompt varyantlari tek
+# basina yetmiyor cunku 2026-08-14 olcumu felaket vakalarin sebebinin prompt
+# degil HAVUZ SIRASI/GORUNUMU oldugunu gosterdi (dogru kayit havuzun 8. ve 10.
+# sirasindaydi, kirpma 8'de kesiyordu).
+#
+# `--variants` hem kol adi hem duz prompt varyanti kabul eder: kol adi verilirse
+# o kolun tum ayarlari uygulanir, degilse prompt varyanti + varsayilan ayarlar.
+ARMS: dict[str, dict] = {
+    # A: bugunku uretim - taban
+    "A": {"variant": "v1", "strict_exact": False, "max_candidates": 8},
+    # B: tek-tokenlik akronim alias'lari exact sayilmaz (sorgu-payi kurali).
+    #    OLCULDU (yerel, 125 sorgu): 99 exact -> 44; 15 kisa/akronim sorgunun
+    #    HICBIRI bozulmadi; hakemin gordugu liste 13 sorguda degisti.
+    "B": {"variant": "v1", "strict_exact": True, "max_candidates": 8},
+    # C: B + kirpma 12. 2026-07-24'te 8 secilmisti ("18 aday modeli yaniltiyor",
+    #    TEK vaka, tezgahsiz); 2026-08-14 olcumu 8'in dogru kaydi kestigini
+    #    gosterdi - 2 felaket vakayi kurtariyor. Ilk kez gercek veriyle sinaniyor.
+    "C": {"variant": "v1", "strict_exact": True, "max_candidates": 12},
+}
+
+
+def _arm(name: str) -> dict:
+    """Kol adiysa kol yapilandirmasi, degilse duz prompt varyanti + varsayilanlar."""
+    if name in ARMS:
+        return ARMS[name]
+    get_variant(name)  # bilinmeyen ad burada patlar
+    return {"variant": name, "strict_exact": False, "max_candidates": 8}
+
 FIELDNAMES = [
     "run_id", "variant", "repeat_idx", "query", "sinif",
+    # kolun retrieval/gorunum ayari - hangi ayarla uretildigi satirda dursun
+    "prompt_variant", "strict_exact", "max_candidates",
     # --- kanit / izlenebilirlik ---
     "prompt_sha256", "schema_sha256", "prompt_chars", "model",
     # --- karar ---
@@ -109,13 +140,17 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _candidates_json(result) -> str:
+def _candidates_json(result, max_candidates: int) -> str:
     """Hakemin GERCEKTEN gordugu aday listesi (kirpilmis goruntu)."""
-    parents, subunits = build_candidate_views(result)
+    parents, subunits = build_candidate_views(result, max_candidates=max_candidates)
 
     def _v(c, kind):
         d = {"kind": kind, "id": c.id, "name": c.name, "tsr": round(c.token_set_ratio, 1),
-             "bm25": round(c.bm25_norm, 3), "exact": c.exact_match}
+             "bm25": round(c.bm25_norm, 3), "exact": c.exact_match,
+             # exact'in HANGI metinle ve kac tokenla tuttugu - span-1 akronim
+             # cakismalarini CSV'den olcebilmek icin (2026-08-14).
+             "exact_text": c.exact_match_text,
+             "exact_span": len((c.exact_match_text or "").split())}
         if kind == "parent":
             d["country"], d["city"] = c.country, c.city
         else:
@@ -136,11 +171,11 @@ def _name_of(pool, matched_id):
 
 
 def _parse_plan(spec: str) -> list[tuple[str, int]]:
-    """'v1,v1,v3' -> [('v1',0), ('v1',1), ('v3',0)]"""
+    """'A,B,C' ya da 'v1,v1,v3' -> [(ad, tekrar_idx), ...]"""
     seen: dict[str, int] = {}
     plan: list[tuple[str, int]] = []
     for name in [s.strip() for s in spec.split(",") if s.strip()]:
-        get_variant(name)  # bilinmeyen ad burada patlar, kosunun ortasinda degil
+        _arm(name)  # bilinmeyen ad burada patlar, kosunun ortasinda degil
         idx = seen.get(name, 0)
         seen[name] = idx + 1
         plan.append((name, idx))
@@ -179,18 +214,22 @@ def cmd_run(args: argparse.Namespace) -> None:
     client = _RecordingClient(base_client)
 
     # `resolve()` sorgu basina BIR KEZ - gecisler arasinda da tekrarlanmaz.
-    cache: dict[str, tuple] = {}
+    # Onbellek anahtari (sorgu, strict_exact): ayni retrieval ayarini paylasan
+    # kollar AYNI havuzu gorur (olcumun temizligi), farkli ayar ayri resolve ister.
+    cache: dict[tuple, tuple] = {}
 
-    def _get_pool(query: str):
-        """(result, resolve_s, candidates_json) - hata durumunda (None, 0, hata)."""
-        if query not in cache:
+    def _get_pool(query: str, strict: bool):
+        """(result, resolve_s) - hata durumunda (None, sure) + hata metni."""
+        key = (query, strict)
+        if key not in cache:
             t0 = time.time()
             try:
-                res = _resolve(query, size=args.top, encode_prewarm=args.prewarm)
-                cache[query] = (res, time.time() - t0, _candidates_json(res))
+                res = _resolve(query, size=args.top, encode_prewarm=args.prewarm,
+                               strict_exact=strict)
+                cache[key] = (res, time.time() - t0, "")
             except Exception as exc:  # noqa: BLE001 - satir izolasyonu
-                cache[query] = (None, time.time() - t0, f"resolve: {type(exc).__name__}: {exc}")
-        return cache[query]
+                cache[key] = (None, time.time() - t0, f"resolve: {type(exc).__name__}: {exc}")
+        return cache[key]
 
     todo_n = len(rows) * len(plan) - len(done)
     print(f"run_id={run_id}  {len(rows)} sorgu x {len(plan)} varyant = {todo_n} cagri  "
@@ -211,21 +250,25 @@ def cmd_run(args: argparse.Namespace) -> None:
                 todo = [n for n in names if (query, n, str(rep)) not in done]
                 if not todo:
                     continue
-                result, resolve_s, cand_json = _get_pool(query)
-
                 for name in todo:
+                    cfg = _arm(name)
+                    result, resolve_s, hata = _get_pool(query, cfg["strict_exact"])
                     rec = {k: "" for k in FIELDNAMES}
                     rec.update(run_id=run_id, variant=name, repeat_idx=rep, query=query,
                                sinif=srow.get("sinif", ""), model=args.model,
-                               resolve_s=f"{resolve_s:.2f}")
+                               resolve_s=f"{resolve_s:.2f}",
+                               prompt_variant=cfg["variant"],
+                               strict_exact=str(cfg["strict_exact"]),
+                               max_candidates=str(cfg["max_candidates"]))
                     if result is None:  # resolve patladi - hakem hic cagrilmaz
-                        rec.update(status="error", error=cand_json[:300])
+                        rec.update(status="error", error=hata[:300])
                         writer.writerow(rec)
                         continue
-                    rec["candidates_json"] = cand_json
+                    rec["candidates_json"] = _candidates_json(result, cfg["max_candidates"])
                     t1 = time.time()
                     try:
-                        v = _judge(result, client, variant=get_variant(name))
+                        v = _judge(result, client, variant=get_variant(cfg["variant"]),
+                                   max_candidates=cfg["max_candidates"])
                         rec["status"] = "ok"
                         rec["parent_verdict"] = v.parent.verdict
                         rec["parent_id"] = v.parent.matched_id or ""

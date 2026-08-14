@@ -20,7 +20,11 @@ import json
 
 from pydantic import ValidationError
 
-from institution_resolver_v3.judge.candidates import CandidateView, build_candidate_views
+from institution_resolver_v3.judge.candidates import (
+    DEFAULT_MAX_CANDIDATES,
+    CandidateView,
+    build_candidate_views,
+)
 from institution_resolver_v3.judge.client import LlmClient
 from institution_resolver_v3.judge.prompt import build_prompt
 from institution_resolver_v3.judge.schema import JudgeResult, SubunitDecision
@@ -295,6 +299,7 @@ def judge(
     client: LlmClient,
     *,
     variant: PromptVariant | None = None,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
 ) -> JudgeResult:
     """resolve() ciktisini hakeme sorar, dogrulanmis `JudgeResult` doner.
 
@@ -302,8 +307,15 @@ def judge(
     VERILMEZSE uretim yolu birebir korunur - prompt bugunkuyle BAYT-DENK, sema
     degismez. Uretim cagiranlarinin (decide/, jobs/, api/, eval/) hicbiri bu
     parametreyi gecmez.
+
+    `max_candidates`: hakeme gosterilen aday sayisi. Varsayilan 8'in gerekcesi
+    candidates.py docstring'inde (2026-07-24 "Ege" bulgusu: 18 adayli liste
+    modeli yaniltmisti). O gozlem TEK bir vakaya dayaniyordu ve deterministik
+    olcum tezgahi yoktu; 2026-08-14 olcumu 8'in de kesip attigini gosterdi -
+    dogru kayit havuzun 8. ve 10. sirasindaydi. Bu yuzden parametre acildi ve
+    A/B ile sinaniyor; VARSAYILAN DEGISMEDI.
     """
-    parents, subunits = build_candidate_views(resolve_result)
+    parents, subunits = build_candidate_views(resolve_result, max_candidates=max_candidates)
     parents_lbl, p_map = _label_views(parents, "P")
     subunits_lbl, s_map = _label_views(subunits, "S")
     prompt = build_prompt(

@@ -101,8 +101,9 @@ class TestRunLoop:
 
         calls = {"resolve": 0}
 
-        def fake_resolve(query, *, size=5, encode_prewarm=False):
+        def fake_resolve(query, *, size=5, encode_prewarm=False, strict_exact=False):
             calls["resolve"] += 1
+            calls.setdefault("strict", []).append(strict_exact)
             return _fake_result(query)
 
         inner = _FakeInner()
@@ -219,3 +220,49 @@ class TestDiff:
         with pytest.raises(SystemExit):
             judge_ab.cmd_diff(judge_ab.argparse.Namespace(
                 run=str(run), sample=str(sample), a="v1#0", b="v9#0", out=None))
+
+
+class TestArms:
+    """Kol = prompt varyanti + retrieval/gorunum ayari (2026-08-14).
+
+    Felaket vakalarin sebebi prompt degil HAVUZ GORUNUMU cikti (dogru kayit
+    havuzun 8./10. sirasindaydi, kirpma 8'de kesiyordu), o yuzden tezgahin
+    yalniz prompt'u degil retrieval ayarini da degistirebilmesi gerekiyor.
+    """
+
+    def test_registry(self):
+        assert judge_ab._arm("A") == {"variant": "v1", "strict_exact": False, "max_candidates": 8}
+        assert judge_ab._arm("B")["strict_exact"] is True
+        assert judge_ab._arm("C")["max_candidates"] == 12
+
+    def test_plain_variant_still_works(self):
+        """Kol adi olmayan ad duz prompt varyanti sayilir - eski kullanim bozulmaz."""
+        assert judge_ab._arm("v4") == {"variant": "v4", "strict_exact": False, "max_candidates": 8}
+
+    def test_unknown_name_fails_early(self):
+        with pytest.raises(KeyError):
+            judge_ab._parse_plan("A,yok")
+
+    def test_arms_sharing_retrieval_config_share_pool(self, tmp_path, monkeypatch):
+        """B ve C ayni `strict_exact` kullanir -> TEK resolve; A farkli -> ayri resolve.
+        Yani 1 sorgu icin 2 resolve, 3 hakem cagrisi."""
+        rows, calls, _ = self._run_arms(tmp_path, monkeypatch, "A,B,C", n_queries=1)
+        assert calls["resolve"] == 2
+        assert len(rows) == 3
+        assert sorted(calls["strict"]) == [False, True]
+
+    def test_config_recorded_per_row(self, tmp_path, monkeypatch):
+        rows, _, _ = self._run_arms(tmp_path, monkeypatch, "A,B,C", n_queries=1)
+        by = {r["variant"]: r for r in rows}
+        assert by["A"]["strict_exact"] == "False" and by["A"]["max_candidates"] == "8"
+        assert by["B"]["strict_exact"] == "True" and by["B"]["max_candidates"] == "8"
+        assert by["C"]["strict_exact"] == "True" and by["C"]["max_candidates"] == "12"
+        assert all(r["prompt_variant"] == "v1" for r in rows)
+
+    def test_exact_span_in_candidates_json(self, tmp_path, monkeypatch):
+        """span-1 akronim cakismalarini CSV'den olcebilmek icin."""
+        rows, _, _ = self._run_arms(tmp_path, monkeypatch, "A", n_queries=1)
+        c = json.loads(rows[0]["candidates_json"])[0]
+        assert "exact_text" in c and "exact_span" in c
+
+    _run_arms = TestRunLoop._run
