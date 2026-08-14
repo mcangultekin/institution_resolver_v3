@@ -231,13 +231,24 @@ class TestArms:
     """
 
     def test_registry(self):
-        assert judge_ab._arm("A") == {"variant": "v1", "strict_exact": False, "max_candidates": 8}
+        assert judge_ab._arm("A") == {"variant": "v1", "strict_exact": False,
+                                      "max_candidates": 8, "pool_gate": None}
         assert judge_ab._arm("B")["strict_exact"] is True
         assert judge_ab._arm("C")["max_candidates"] == 12
+        assert judge_ab._arm("D")["pool_gate"] == "parent"
+        assert judge_ab._arm("E")["pool_gate"] == "parent_filtered"
 
     def test_plain_variant_still_works(self):
         """Kol adi olmayan ad duz prompt varyanti sayilir - eski kullanim bozulmaz."""
-        assert judge_ab._arm("v4") == {"variant": "v4", "strict_exact": False, "max_candidates": 8}
+        assert judge_ab._arm("v4") == {"variant": "v4", "strict_exact": False,
+                                       "max_candidates": 8, "pool_gate": None}
+
+    def test_every_arm_has_full_config(self):
+        """Eksik anahtar kosunun ortasinda KeyError'a donmesin - varsayilanlar
+        her kola uygulanir."""
+        for ad in judge_ab.ARMS:
+            cfg = judge_ab._arm(ad)
+            assert set(cfg) == {"variant", "strict_exact", "max_candidates", "pool_gate"}
 
     def test_unknown_name_fails_early(self):
         with pytest.raises(KeyError):

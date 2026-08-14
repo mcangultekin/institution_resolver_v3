@@ -61,6 +61,11 @@ from institution_resolver_v3.judge.judge import JudgeValidationError  # noqa: E4
 from institution_resolver_v3.judge.judge import judge as _judge  # noqa: E402
 from institution_resolver_v3.judge.variants import get_variant  # noqa: E402
 from institution_resolver_v3.retrieve.resolve import resolve as _resolve  # noqa: E402
+from institution_resolver_v3.retrieve.token_df import (  # noqa: E402
+    gate_pool,
+    load_token_df,
+    orphan_tokens,
+)
 
 csv.field_size_limit(10_000_000)
 
@@ -85,20 +90,37 @@ ARMS: dict[str, dict] = {
     #    TEK vaka, tezgahsiz); 2026-08-14 olcumu 8'in dogru kaydi kestigini
     #    gosterdi - 2 felaket vakayi kurtariyor. Ilk kez gercek veriyle sinaniyor.
     "C": {"variant": "v1", "strict_exact": True, "max_candidates": 12},
+    # D/E: HAVUZ KALITESI KAPISI (bkz. retrieve/token_df.py). Sorgunun kimlik
+    #    tasiyan nadir bir token'i havuzda hic karsilanmiyorsa `auto_match`
+    #    `review`e INDIRILIR - sert `no_match` DEGIL. Gerekce: oturumdaki dort
+    #    mudahalenin (v3/v5/B/C) dordu de "bir yerden kazan, baska yerden
+    #    kaybet" ciktisi verdi; indirgeme ilk kez lehte-asimetrik olcum verdi
+    #    (yerelde: 19 indirgemenin ~10'u gercekten yanlis cevapti, 9'u dogruydu -
+    #    ve yanlis indirgemenin bedeli insan kuyrugu, dogrununki sessiz hata).
+    #    Iki mod ayri olculuyor, fark yalniz kapinin baktigi havuz.
+    "D": {"variant": "v1", "strict_exact": False, "max_candidates": 8,
+          "pool_gate": "parent"},
+    "E": {"variant": "v1", "strict_exact": False, "max_candidates": 8,
+          "pool_gate": "parent_filtered"},
 }
+
+
+_ARM_DEFAULTS = {"strict_exact": False, "max_candidates": 8, "pool_gate": None}
 
 
 def _arm(name: str) -> dict:
     """Kol adiysa kol yapilandirmasi, degilse duz prompt varyanti + varsayilanlar."""
     if name in ARMS:
-        return ARMS[name]
+        return {**_ARM_DEFAULTS, **ARMS[name]}
     get_variant(name)  # bilinmeyen ad burada patlar
-    return {"variant": name, "strict_exact": False, "max_candidates": 8}
+    return {**_ARM_DEFAULTS, "variant": name}
 
 FIELDNAMES = [
     "run_id", "variant", "repeat_idx", "query", "sinif",
     # kolun retrieval/gorunum ayari - hangi ayarla uretildigi satirda dursun
-    "prompt_variant", "strict_exact", "max_candidates",
+    "prompt_variant", "strict_exact", "max_candidates", "pool_gate",
+    # kapi ateşledi mi + hangi token'lar oksuz kaldi (post-mortem)
+    "gate_fired", "orphan_tokens",
     # --- kanit / izlenebilirlik ---
     "prompt_sha256", "schema_sha256", "prompt_chars", "model",
     # --- karar ---
@@ -209,6 +231,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     for name, rep in plan:
         passes.setdefault(rep, []).append(name)
 
+    # df haritasi: dosya yoksa katalogdan uretilir (~3 sn, bkz. token_df.py)
+    _DF = load_token_df() if any(_arm(n)["pool_gate"] for n, _ in plan) else {}
+    if any(_arm(n)["pool_gate"] for n, _ in plan) and not _DF:
+        sys.exit("havuz kapisi istendi ama token df uretilemedi "
+                 "(data/processed/parent_canonical.jsonl yok)")
+
     run_id = uuid.uuid4().hex[:8]
     base_client = OllamaClient(model=args.model, host=args.host)
     client = _RecordingClient(base_client)
@@ -259,7 +287,8 @@ def cmd_run(args: argparse.Namespace) -> None:
                                resolve_s=f"{resolve_s:.2f}",
                                prompt_variant=cfg["variant"],
                                strict_exact=str(cfg["strict_exact"]),
-                               max_candidates=str(cfg["max_candidates"]))
+                               max_candidates=str(cfg["max_candidates"]),
+                               pool_gate=cfg["pool_gate"] or "")
                     if result is None:  # resolve patladi - hakem hic cagrilmaz
                         rec.update(status="error", error=hata[:300])
                         writer.writerow(rec)
@@ -278,6 +307,21 @@ def cmd_run(args: argparse.Namespace) -> None:
                             rec["subunit_id"] = v.subunit.matched_id or ""
                             rec["subunit_name"] = _name_of(result.subunits, v.subunit.matched_id)
                         rec["unit_phrase"] = v.unit_phrase or ""
+                        # HAVUZ KALITESI KAPISI - hakem cevap verdikten SONRA.
+                        # Kimlik tasiyan nadir token havuzda hic karsilanmiyorsa
+                        # `auto_match` guvenilmez: `review`e indirilir, kimlik
+                        # KORUNUR (sert `no_match` degil - bkz. ARMS notu).
+                        if cfg["pool_gate"]:
+                            oksuz = orphan_tokens(
+                                query, gate_pool(result, cfg["pool_gate"]), _DF
+                            )
+                            rec["gate_fired"] = "1" if oksuz else "0"
+                            rec["orphan_tokens"] = ",".join(oksuz[:6])
+                            if oksuz:
+                                if rec["parent_verdict"] == "auto_match":
+                                    rec["parent_verdict"] = "review"
+                                if rec["subunit_verdict"] == "auto_match":
+                                    rec["subunit_verdict"] = "review"
                     except (JudgeValidationError, LlmError) as exc:
                         rec["status"] = "error"
                         rec["error"] = f"{type(exc).__name__}: {exc}"[:300]
