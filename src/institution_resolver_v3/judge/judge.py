@@ -24,6 +24,7 @@ from institution_resolver_v3.judge.candidates import CandidateView, build_candid
 from institution_resolver_v3.judge.client import LlmClient
 from institution_resolver_v3.judge.prompt import build_prompt
 from institution_resolver_v3.judge.schema import JudgeResult, SubunitDecision
+from institution_resolver_v3.judge.variants import PromptVariant
 from institution_resolver_v3.retrieve.resolve import ResolveResult
 
 
@@ -192,13 +193,25 @@ def _label_views(
     return labeled, {f"{prefix}{i + 1}": v.id for i, v in enumerate(views)}
 
 
-def judge(resolve_result: ResolveResult, client: LlmClient) -> JudgeResult:
-    """resolve() ciktisini hakeme sorar, dogrulanmis `JudgeResult` doner."""
+def judge(
+    resolve_result: ResolveResult,
+    client: LlmClient,
+    *,
+    variant: PromptVariant | None = None,
+) -> JudgeResult:
+    """resolve() ciktisini hakeme sorar, dogrulanmis `JudgeResult` doner.
+
+    `variant` (A/B olcumu icin, bkz. judge/variants.py + scripts/judge_ab.py):
+    VERILMEZSE uretim yolu birebir korunur - prompt bugunkuyle BAYT-DENK, sema
+    degismez. Uretim cagiranlarinin (decide/, jobs/, api/, eval/) hicbiri bu
+    parametreyi gecmez.
+    """
     parents, subunits = build_candidate_views(resolve_result)
     parents_lbl, p_map = _label_views(parents, "P")
     subunits_lbl, s_map = _label_views(subunits, "S")
     prompt = build_prompt(
-        resolve_result.query, resolve_result.decomposed, parents_lbl, subunits_lbl
+        resolve_result.query, resolve_result.decomposed, parents_lbl, subunits_lbl,
+        variant=variant,
     )
     raw = client.generate(prompt, format_schema=build_format_schema(parents_lbl, subunits_lbl))
 

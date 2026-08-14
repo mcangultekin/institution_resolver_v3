@@ -24,6 +24,7 @@ docs/DENEY_2026-07-24_gemma_e2b_e4b_karsilastirma.md).
 from __future__ import annotations
 
 from institution_resolver_v3.judge.candidates import CandidateView
+from institution_resolver_v3.judge.variants import PromptVariant
 from institution_resolver_v3.retrieve.decompose import DecomposedQuery
 
 _SCHEMA_EXAMPLE = """{
@@ -31,6 +32,60 @@ _SCHEMA_EXAMPLE = """{
   "unit_phrase": "<sorgudaki EN SPESİFİK birim ifadesi, sorgudan AYNEN kopyala>" | null,
   "subunit": {"verdict": "auto_match|review|ambiguous|no_match", "matched_id": "<id|ad>" | null} | null
 }"""
+
+
+# --------------------------------------------------------------------------- #
+# Varyant: semanin ZATEN zorladigi bloklar (bkz. judge/variants.py PromptVariant)
+# --------------------------------------------------------------------------- #
+# Bu bloklarin hicbiri modelin uretebilecegi ciktiyi degistirmiyor - Ollama'nin
+# kisitli uretimi (llama.cpp grameri) ayni kisiti FIZIKSEL olarak zorluyor
+# (`matched_id.enum`, `no_match` dalindaki `const`/`null`). Metin yalniz yer
+# kapliyor. Cikarmanin ETKISI olculecek (yanlislanabilir tahmin: rapor +333
+# token eklemenin modeli daha kararli yaptigini olctu, cikarmak ters yonde
+# calismali).
+#
+# Metin AYNEN, uretilen prompt'tan cikarilacak sekilde (satir sonu dahil) tutulur;
+# bulunamazsa `_apply_variant` HATA firlatir - prompt ileride degisirse varyant
+# sessizce bos islem yapmasin (olculen sey "hicbir sey" olmasin).
+_DEAD_RULE_BLOCKS: tuple[str, ...] = (
+    """- İki liste AYRIDIR: parent.matched_id SADECE "KURUM ADAYLARI" listesinden,
+  subunit.matched_id SADECE "ALT-BİRİM ADAYLARI" listesinden seçilebilir -
+  listeler arası id kullanmak GEÇERSİZDİR.
+""",
+    """- matched_id, seçtiğin adayın id'si ve adı "id|ad" biçiminde birleştirilerek
+  yazılmalı (ör. "S3|GERİATRİ BİLİM DALI") - SADECE aday listelerinde yer alan
+  adaylardan biri olmalı, yeni id/ad UYDURMA. "no_match" durumunda matched_id
+  "null" olmalı.
+""",
+)
+
+# ÇIKTI paragrafi + JSON sema ornegi: gramerin kendisi. Tamamen silmek yerine tek
+# satirlik isaretciye indirilir (yapinin nereden basladigi metinde kalsin).
+_OUTPUT_BLOCK_FULL = f"""ÇIKTI: SADECE aşağıdaki şemaya uyan, başka HİÇBİR metin/açıklama/gerekçe
+içermeyen KISA bir JSON döndür (gerekçe YAZMA, sadece verdict+matched_id):
+{_SCHEMA_EXAMPLE}"""
+_OUTPUT_BLOCK_SHORT = "ÇIKTI: yalnızca JSON."
+
+
+def _apply_variant(text: str, variant: PromptVariant | None) -> str:
+    """Varyant donusumlerini URETILMIS prompt'a uygular.
+
+    v1 yolu (variant None ya da `olu_kurallar=True`) metne HIC DOKUNMAZ - bayt
+    denklik yapisal olarak garanti, `tests/fixtures/prompt_v1_golden.txt` bunu
+    ayrica kilitler.
+    """
+    if variant is None or variant.olu_kurallar:
+        return text
+    for block in _DEAD_RULE_BLOCKS:
+        if block not in text:
+            raise RuntimeError(
+                "prompt varyanti uygulanamadi: cikarilacak blok metinde bulunamadi "
+                "(prompt degisti mi?). Blok basi: " + block.splitlines()[0][:60]
+            )
+        text = text.replace(block, "", 1)
+    if _OUTPUT_BLOCK_FULL not in text:
+        raise RuntimeError("prompt varyanti uygulanamadi: ÇIKTI blogu bulunamadi")
+    return text.replace(_OUTPUT_BLOCK_FULL, _OUTPUT_BLOCK_SHORT, 1)
 
 
 def _fmt_exact(c: CandidateView) -> str:
@@ -71,7 +126,15 @@ def build_prompt(
     decomposed: DecomposedQuery,
     parents: list[CandidateView],
     subunits: list[CandidateView],
+    *,
+    variant: PromptVariant | None = None,
 ) -> str:
+    """Hakem prompt'unu kurar.
+
+    `variant` VERILMEZSE (uretim yolu) metin bugunku prompt ile BAYT-DENK'tir -
+    varyant mekanizmasi uretilmis metnin uzerinde calisir, uretimini degistirmez
+    (bkz. `_apply_variant`, judge/variants.py).
+    """
     hyp_lines = "\n".join(
         f"  H{i}: kurum-kısmı=\"{h.institution_part}\"  (bu hipotezi öneren aday: "
         f"{h.matched_parent_name or '—'}, güven={h.boundary_score:.1f})"
@@ -85,7 +148,7 @@ def build_prompt(
     # Asama 1 hiz paketi): Ollama ayni prefix'in KV-cache'ini yeniden kullanir -
     # sorgu 3. satirdayken cache her cagrida 2. satirda kiriliyordu ve ~1.5k
     # token'lik talimat blogu her seferinde yeniden isleniyordu.
-    return f"""Görev: serbest metin bir kurum ifadesini KATALOG'daki doğru kayıtla eşleştir.
+    text = f"""Görev: serbest metin bir kurum ifadesini KATALOG'daki doğru kayıtla eşleştir.
 Katalog iki seviyeli: KURUM (üniversite/ana kuruluş) + ona bağlı ALT-BİRİM (fakülte/bölüm/enstitü vb.).
 Aşağıda önce kurallar, sonra SORGU ve aday listeleri gelir.
 
@@ -165,3 +228,4 @@ ALT-BİRİM ADAYLARI (subunit):
 
 Şimdi kararını yukarıdaki kurallara ve şemaya uygun JSON olarak ver.
 """
+    return _apply_variant(text, variant)
