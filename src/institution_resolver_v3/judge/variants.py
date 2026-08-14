@@ -50,6 +50,29 @@ class PromptVariant:
         birim ifadesi sandi, ikisinde `unit_phrase`e LITERAL 'null' DIZGESI
         yazdi), 5 vakada olmayan birim uydurdu, 2 vakada gecersiz JSON uretti.
 
+    bagli_sema: PROMPT DEGIL **SEMA** degisikligi - tek varyant bayragi o
+        katmana dokunuyor. Bugun `parent` ve `subunit` enum'lari BAGIMSIZ; model
+        P3 ile S5'i birlikte secebiliyor ama S5 gercekte P7'ye bagli olabiliyor
+        ve `_validate_ids` TUM SATIRI reddediyor (uretimde olculdu: %7,7 kayip -
+        3000 sorguda 232 satir, envanterde 34.299 satir). Ustelik prompt modele
+        "kararlari AYRI ayri ver" diyor; model soyleneni yaptigi icin
+        cezalandiriliyor.
+        `True` iken ust seviyeye `anyOf`: her parent adayi icin bir dal, o dalda
+        subunit enum'u YALNIZ o parent'a bagli adaylari icerir - tutarsiz cift
+        FIZIKSEL OLARAK uretilemez. Prompt'taki celiskili cumle de duzeltilir
+        (bkz. prompt.py `_BOUND_*`), yoksa modele yalan bir dunya tarif edilir.
+
+        BEDELI BILINIYOR (onceki oturum olctu, 100 sorgu): uyusmazlik hatasi bir
+        defekt oldugu kadar bir KAFA KARISIKLIGI DEDEKTORU'ydu - model tutarsiz
+        cift sectiginde "ne yaptigimi bilmiyorum" diyordu. Ifade edilemez olunca
+        kafasi karisikken TUTARLI AMA YANLIS bir sey secip guvenle soyluyor
+        (14 duzelmenin 10'u auto_match'e dondu, yalniz 1'i dogruydu). Bu yuzden
+        dedektor SILINMIYOR, `judge._confusion_signal` ile KODA tasindi.
+
+        YAPISAL YAN ETKI: parent'i aday listesinde olmayan bir subunit bagli
+        semada HIC SECILEMEZ. Bugun de yanlis secilirdi (ve reddedilirdi), ama
+        artik sessizce erisilemez - bilinen ve kabul edilen daralma.
+
     `verdict` TANIMLARI ("review" ne demek) HER ZAMAN KALIR - onlar semantik
     icerik, sema onlari zorlamiyor.
     """
@@ -57,6 +80,7 @@ class PromptVariant:
     name: str = "v1"
     sema_zorunlu_kurallar: bool = True
     sema_ornegi: bool = True
+    bagli_sema: bool = False
 
 
 # Taban: bugunku uretim prompt'u. Butun karsilastirmalar buna gore.
@@ -75,7 +99,15 @@ V3 = PromptVariant(name="v3", sema_zorunlu_kurallar=False, sema_ornegi=False)
 # salt token azalmasindan geliyor demektir.
 V4 = PromptVariant(name="v4", sema_zorunlu_kurallar=False, sema_ornegi=True)
 
-REGISTRY: dict[str, PromptVariant] = {v.name: v for v in (V1, V3, V4)}
+# v4 + BAGLI SEMA. v4 uzerine kuruldu (v1 degil) cunku v4 olculdu ve kazandi
+# (27-8, 125 sorgu); boylece v4 <-> v5 farki YALNIZ sema degisikligini izole eder.
+# ADLANDIRMA: onceki oturumun raporu bagli semaya "v4" diyor - bizim v4'umuz
+# prompt varyanti. Karismasin diye buranin adi "v5-bagli".
+V5 = PromptVariant(
+    name="v5-bagli", sema_zorunlu_kurallar=False, sema_ornegi=True, bagli_sema=True
+)
+
+REGISTRY: dict[str, PromptVariant] = {v.name: v for v in (V1, V3, V4, V5)}
 
 
 def get_variant(name: str) -> PromptVariant:

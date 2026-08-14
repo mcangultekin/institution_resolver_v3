@@ -66,6 +66,21 @@ içermeyen KISA bir JSON döndür (gerekçe YAZMA, sadece verdict+matched_id):
 {_SCHEMA_EXAMPLE}"""
 _OUTPUT_BLOCK_SHORT = "ÇIKTI: yalnızca JSON."
 
+# BAGLI SEMA (variants.PromptVariant.bagli_sema): asagidaki cumle bagli semada
+# YALAN olur - parent secimi subunit seceneklerini birebir belirler. Modele
+# yanlis bir dunya tarif etmemek icin degistirilir. Sema kisiti tek basina
+# yeterli degil: model neden secim alaninin daraldigini bilmezse, kurumu
+# subunit'e uydurmaya calisabilir.
+_BOUND_OLD = """- Kurum (parent) ve alt-birim (subunit) kararını AYRI ayrı ver - biri diğerini
+  otomatik belirlemez.
+"""
+_BOUND_NEW = """- ÖNCE kurumu (parent) seç. Alt-birim (subunit) adayları, SEÇTİĞİN kuruma bağlı
+  olanlarla sınırlıdır - başka bir kurumun birimini seçemezsin. Sorgudaki birim
+  ifadesinin karşılığı seçtiğin kurumun altında yoksa subunit'i "no_match" yap;
+  bu, kurum kararını DÜŞÜRMEZ. Kurumdan emin değilsen kurumu düzelt, birimi
+  kuruma uydurmaya çalışma.
+"""
+
 
 def _apply_variant(text: str, variant: PromptVariant | None) -> str:
     """Varyant donusumlerini URETILMIS prompt'a uygular.
@@ -90,6 +105,10 @@ def _apply_variant(text: str, variant: PromptVariant | None) -> str:
         if _OUTPUT_BLOCK_FULL not in text:
             raise RuntimeError("prompt varyanti uygulanamadi: ÇIKTI blogu bulunamadi")
         text = text.replace(_OUTPUT_BLOCK_FULL, _OUTPUT_BLOCK_SHORT, 1)
+    if variant.bagli_sema:
+        if _BOUND_OLD not in text:
+            raise RuntimeError("prompt varyanti uygulanamadi: bagimsiz-karar cumlesi bulunamadi")
+        text = text.replace(_BOUND_OLD, _BOUND_NEW, 1)
     return text
 
 

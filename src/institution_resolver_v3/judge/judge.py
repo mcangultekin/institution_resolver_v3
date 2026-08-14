@@ -87,10 +87,85 @@ def _choice(v: CandidateView) -> str:
     return f"{v.id}|{v.name} ({v.best_alias})" if v.best_alias else f"{v.id}|{v.name}"
 
 
-def build_format_schema(
-    parents: list[CandidateView], subunits: list[CandidateView]
+_UNIT_PHRASE_SCHEMA = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+
+
+def _sub_slot(choices: list[str]) -> dict:
+    """`subunit` alani: karar blogu ya da null (sorguda birim ifadesi yok)."""
+    return {"anyOf": [_decision_schema(choices), {"type": "null"}]}
+
+
+def _bound_schema(
+    parents: list[CandidateView],
+    subunits: list[CandidateView],
+    parent_real_ids: dict[str, str],
 ) -> dict:
-    """Ollama kisitli-uretim semasi: JudgeResult'in aynasi + aday enum'lari."""
+    """BAGLI sema: subunit enum'u SECILEN parent'a kilitlenir.
+
+    Ust seviyede `anyOf`; her parent adayi icin bir dal (`matched_id` o adaya
+    `const`), o dalin subunit enum'unda YALNIZ o parent'a bagli adaylar. Boylece
+    "parent=X + subunit=Y ama Y aslinda Z'ye bagli" kombinasyonu uretim
+    asamasinda IMKANSIZ olur - bugun uretimde satirin tamamini dusuren hata
+    sinifi (%7,7) tamamen kapanir.
+
+    `parent_real_ids`: {etiket -> gercek katalog id}. Gerekli cunku `parents`
+    etiketlenmis geliyor (`P1`, `P2`…) ama `subunits[i].parent_id` GERCEK
+    katalog id'sini tasiyor - eslestirme ancak bu harita ile yapilabilir.
+
+    Parent'i aday listesinde OLMAYAN subunit hicbir dala giremez; bu bilincli
+    (bkz. variants.py "YAPISAL YAN ETKI").
+    """
+    branches: list[dict] = [
+        {
+            "type": "object",
+            "properties": {
+                "parent": _NO_MATCH_BRANCH,
+                "unit_phrase": _UNIT_PHRASE_SCHEMA,
+                # parent yoksa subunit de kimlik oneremez - judge()'in
+                # 2026-07-30 indirgemesiyle ayni ilke, burada SEMAYA kodlandi.
+                "subunit": {"anyOf": [_NO_MATCH_BRANCH, {"type": "null"}]},
+            },
+            "required": ["parent", "unit_phrase", "subunit"],
+        }
+    ]
+    for p in parents:
+        real = parent_real_ids.get(p.id, p.id)
+        kendi = [_choice(s) for s in subunits if s.parent_id == real]
+        branches.append(
+            {
+                "type": "object",
+                "properties": {
+                    "parent": {
+                        "type": "object",
+                        "properties": {
+                            "verdict": {"enum": [v for v in _VERDICTS if v != "no_match"]},
+                            "matched_id": {"const": _choice(p)},
+                        },
+                        "required": ["verdict", "matched_id"],
+                    },
+                    "unit_phrase": _UNIT_PHRASE_SCHEMA,
+                    "subunit": _sub_slot(kendi),
+                },
+                "required": ["parent", "unit_phrase", "subunit"],
+            }
+        )
+    return {"anyOf": branches}
+
+
+def build_format_schema(
+    parents: list[CandidateView],
+    subunits: list[CandidateView],
+    *,
+    variant: PromptVariant | None = None,
+    parent_real_ids: dict[str, str] | None = None,
+) -> dict:
+    """Ollama kisitli-uretim semasi: JudgeResult'in aynasi + aday enum'lari.
+
+    `variant.bagli_sema` acikken subunit enum'u secilen parent'a baglanir
+    (bkz. `_bound_schema`); aksi halde bugunku BAGIMSIZ sema aynen uretilir.
+    """
+    if variant is not None and variant.bagli_sema:
+        return _bound_schema(parents, subunits, parent_real_ids or {})
     return {
         "type": "object",
         "properties": {
@@ -99,16 +174,38 @@ def build_format_schema(
             # korur): model once sorgudaki en spesifik birim ifadesini yazmaya
             # zorlanir, subunit secimini ondan SONRA yapar (dikkat cipasi,
             # bkz. schema.py unit_phrase notu).
-            "unit_phrase": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "subunit": {
-                "anyOf": [
-                    _decision_schema([_choice(c) for c in subunits]),
-                    {"type": "null"},
-                ]
-            },
+            "unit_phrase": _UNIT_PHRASE_SCHEMA,
+            "subunit": _sub_slot([_choice(c) for c in subunits]),
         },
         "required": ["parent", "unit_phrase", "subunit"],
     }
+
+
+def _confusion_signal(
+    result: JudgeResult, subunits: list[CandidateView], parent_id: str | None
+) -> bool:
+    """Bagli semada KAYBOLAN "kafa karisikligi" sinyalini kodda yeniden uretir.
+
+    Bugun tutarsiz parent/subunit cifti bir HATA olarak yakalaniyor ve satir
+    dusuyor. Bu, bir defekt oldugu kadar bir sinyaldi: model "ne yaptigimi
+    bilmiyorum" diyordu. Bagli semada o kombinasyon uretilemedigi icin sinyal
+    de kayboluyor ve model kafasi karisikken TUTARLI AMA YANLIS bir sey secip
+    guvenle soyluyor (onceki oturum: 14 duzelmenin 10'u auto_match'e dondu,
+    yalniz 1'i dogruydu).
+
+    Burada ayni sinyal LLM'e sorulmadan uretilir: havuzdaki EN GUCLU subunit
+    kaniti (once exact_match, sonra tsr) secilen parent'a ait DEGILSE, model
+    ikinci en iyiye razi olmus demektir - bu bir kararsizlik isaretidir.
+    Sonucu ISTISNA degil, `auto_match` -> `review` indirgemesi (bkz. judge()).
+    """
+    if parent_id is None or result.subunit is None or result.subunit.matched_id is None:
+        return False
+    guclu = max(
+        (s for s in subunits if s.parent_id),
+        key=lambda s: (s.exact_match, s.token_set_ratio),
+        default=None,
+    )
+    return guclu is not None and guclu.parent_id != parent_id
 
 
 class JudgeValidationError(RuntimeError):
@@ -213,7 +310,12 @@ def judge(
         resolve_result.query, resolve_result.decomposed, parents_lbl, subunits_lbl,
         variant=variant,
     )
-    raw = client.generate(prompt, format_schema=build_format_schema(parents_lbl, subunits_lbl))
+    raw = client.generate(
+        prompt,
+        format_schema=build_format_schema(
+            parents_lbl, subunits_lbl, variant=variant, parent_real_ids=p_map
+        ),
+    )
 
     try:
         payload = json.loads(raw)
@@ -260,5 +362,19 @@ def judge(
         and result.parent.matched_id is None
     ):
         result.subunit = SubunitDecision(verdict="no_match", matched_id=None)
+
+    # Bagli semada kaybolan kafa-karisikligi sinyali (bkz. `_confusion_signal`).
+    # ISTISNA DEGIL indirgeme: satir kaybolmaz, ama model kararsizken `auto_match`
+    # cikmaz. Yalniz `bagli_sema` acikken kosar - kapaliyken ayni durum zaten
+    # `_validate_ids`te hata olarak yakalaniyor, iki kez cezalandirmayalim.
+    if (
+        variant is not None
+        and variant.bagli_sema
+        and _confusion_signal(result, subunits, result.parent.matched_id)
+    ):
+        if result.parent.verdict == "auto_match":
+            result.parent.verdict = "review"
+        if result.subunit is not None and result.subunit.verdict == "auto_match":
+            result.subunit.verdict = "review"
 
     return result
