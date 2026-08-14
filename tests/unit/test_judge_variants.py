@@ -14,10 +14,12 @@ import pytest
 
 from institution_resolver_v3.judge.candidates import CandidateView
 from institution_resolver_v3.judge.prompt import build_prompt
-from institution_resolver_v3.judge.variants import V1, V3, PromptVariant, get_variant
+from institution_resolver_v3.judge.variants import V1, V3, V4, PromptVariant, get_variant
 from institution_resolver_v3.retrieve.decompose import BoundaryHypothesis, DecomposedQuery
 
-GOLDEN = Path(__file__).resolve().parents[1] / "fixtures" / "prompt_v1_golden.txt"
+_FIX = Path(__file__).resolve().parents[1] / "fixtures"
+GOLDEN = _FIX / "prompt_v1_golden.txt"
+GOLDEN_V3 = _FIX / "prompt_v3_golden.txt"
 
 
 def _fixture():
@@ -65,6 +67,27 @@ def test_explicit_v1_equals_default():
     assert build_prompt(q, dq, p, s, variant=V1) == build_prompt(q, dq, p, s)
 
 
+def test_v3_byte_identical_to_golden():
+    """v3'un ciktisi 14 Agustos'ta 125 sorguda OLCULDU (35 fark tek tek
+    incelendi). Bayraklar iki parcaya ayrilirken metin kaymamali - kaysaydi
+    o olcum bugunku kodla karsilastirilamaz hale gelirdi."""
+    q, dq, p, s = _fixture()
+    assert build_prompt(q, dq, p, s, variant=V3) == GOLDEN_V3.read_text(encoding="utf-8")
+
+
+def test_flags_are_independent():
+    """Iki bayrak birbirinden bagimsiz: v4 = yalniz kurallari, ters varyant =
+    yalniz sema ornegini cikarir; ikisi birlikte v3'u verir."""
+    q, dq, p, s = _fixture()
+    yalniz_ornek_yok = PromptVariant(name="x", sema_zorunlu_kurallar=True, sema_ornegi=False)
+    a = build_prompt(q, dq, p, s, variant=V1)
+    b = build_prompt(q, dq, p, s, variant=V4)              # kurallar cikti
+    c = build_prompt(q, dq, p, s, variant=yalniz_ornek_yok)  # ornek cikti
+    d = build_prompt(q, dq, p, s, variant=V3)              # ikisi de cikti
+    assert len(a) > len(b) > len(d) and len(a) > len(c) > len(d)
+    assert (len(a) - len(b)) + (len(a) - len(c)) == len(a) - len(d)  # toplanabilir
+
+
 class TestV3DeadRules:
     def test_removes_schema_enforced_rules(self):
         q, dq, p, s = _fixture()
@@ -102,10 +125,47 @@ class TestV3DeadRules:
         assert 'diğer_adı="EGE UNIVERSITY"' in out
 
 
+class TestV4:
+    """v4 = sema-zorunlu kural bloklari CIKAR, sema ornegi KALIR.
+
+    14 Agustos olcumunden dogdu: v3'un iki etkisi zit yonde ve FARKLI
+    bloklardan geliyordu (16 kazanc kurallardan, 18 kayip sema ornegini
+    kaybetmekten). v4 kazandiran tarafi alip hasar vereni birakiyor.
+    """
+
+    def test_removes_schema_enforced_rules_like_v3(self):
+        q, dq, p, s = _fixture()
+        out = build_prompt(q, dq, p, s, variant=V4)
+        assert "listeler arası id kullanmak GEÇERSİZDİR" not in out
+        assert "yeni id/ad UYDURMA" not in out
+
+    def test_keeps_schema_example_unlike_v3(self):
+        """ASIL FARK: `| null` isaretleri modelin null secenegini goren tek
+        ipucu - gramer izin veriyor ama zorlamiyor (v3'te kaybedilince 11
+        ciplak kurum sorgusunda subunit null yerine no_match oldu)."""
+        q, dq, p, s = _fixture()
+        out = build_prompt(q, dq, p, s, variant=V4)
+        assert '"unit_phrase": "<sorgudaki EN SPESİFİK birim ifadesi' in out
+        assert '"subunit": {"verdict"' in out
+        assert "| null" in out
+        assert "ÇIKTI: SADECE aşağıdaki şemaya uyan" in out
+
+    def test_between_v1_and_v3_in_length(self):
+        q, dq, p, s = _fixture()
+        v1, v3, v4 = (len(build_prompt(q, dq, p, s, variant=v)) for v in (V1, V3, V4))
+        assert v3 < v4 < v1
+
+    def test_differs_from_both(self):
+        q, dq, p, s = _fixture()
+        a, b, c = (build_prompt(q, dq, p, s, variant=v) for v in (V1, V3, V4))
+        assert c != a and c != b
+
+
 class TestVariantRegistry:
     def test_get_known(self):
         assert get_variant("v1") is V1
         assert get_variant("v3") is V3
+        assert get_variant("v4") is V4
 
     def test_unknown_raises_loudly(self):
         with pytest.raises(KeyError, match="bilinmeyen varyant"):
@@ -118,8 +178,13 @@ class TestVariantRegistry:
 
 def test_missing_block_raises_instead_of_silent_noop():
     """Prompt ileride degisir de cikarilacak blok bulunamazsa varyant SESSIZCE
-    bos islem yapmamali - yoksa 'olcum yaptik' sanip hicbir sey olcmezdik."""
+    bos islem yapmamali - yoksa 'olcum yaptik' sanip hicbir sey olcmezdik.
+    Iki bayrak icin de ayri ayri gecerli."""
     from institution_resolver_v3.judge import prompt as prompt_mod
 
     with pytest.raises(RuntimeError, match="bulunamadi"):
-        prompt_mod._apply_variant("alakasiz metin", PromptVariant(name="x", olu_kurallar=False))
+        prompt_mod._apply_variant(
+            "alakasiz metin", PromptVariant(name="x", sema_zorunlu_kurallar=False)
+        )
+    with pytest.raises(RuntimeError, match="bulunamadi"):
+        prompt_mod._apply_variant("alakasiz metin", PromptVariant(name="y", sema_ornegi=False))

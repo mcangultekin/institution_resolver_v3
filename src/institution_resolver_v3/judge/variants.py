@@ -27,34 +27,55 @@ class PromptVariant:
     """Tek bir prompt varyanti. `frozen`: koşu boyunca degismesin (aynı nesne
     tum sorgularda paylasilir; yerinde degistirilirse olcum sessizce bozulurdu).
 
-    olu_kurallar: Semanin (Ollama kisitli uretim grameri) ZATEN fiziksel olarak
-        zorladigi kurallar prompt'ta dursun mu. `True` = bugunku davranis.
-        `False` = su uc blok cikarilir:
+    Iki BAGIMSIZ bayrak - cunku 14 Agustos olcumu ikisinin ZIT yonde calistigini
+    gosterdi (125 sorgu, 35 fark, hepsi tek tek incelendi):
+
+    sema_zorunlu_kurallar: Semanin (llama.cpp grameri) ZATEN fiziksel olarak
+        zorladigi iki kural blogu prompt'ta dursun mu.
           1. "İki liste AYRIDIR ... listeler arası id GEÇERSİZDİR"
              -> `matched_id.enum` zaten yalnız o listenin adaylarini iceriyor
           2. "matched_id ... 'id|ad' biçiminde ... UYDURMA ... null olmalı"
              -> ayni enum + `no_match` dalindaki `const`/`null`
-          3. ÇIKTI paragrafi + JSON sema ornegi
-             -> gramerin kendisi; metinle tekrar anlatmak
-        `verdict` TANIMLARI ("review" ne demek) BILEREK KALIR - onlar semantik
-        icerik, sema onlari zorlamiyor; yalniz deger LISTESI enum'da tekrarli.
+        OLCULDU: cikarmak modeli parent'ta belirgin daha TEMKINLI yapiyor -
+        dogru cevabin havuzda OLMADIGI 16 sorguda yanlis `auto_match` yerine
+        `no_match` dedi (Iğdır MYO -> İstanbul Şişli MYO, Bursa EAH -> Ankara
+        Gülhane, Trakya Tarımsal Arş. Ens. -> TRAKYA ÜNİVERSİTESİ gibi).
+
+    sema_ornegi: ÇIKTI paragrafi + JSON sema ornegi dursun mu.
+        "Olu kural" sanilmisti, DEGILMIS (14 Agustos, kanitli): ornekteki
+        `"unit_phrase": ... | null` ve `"subunit": {...} | null` isaretleri
+        modelin `null` secenegini goren TEK ipucu - gramer buna izin veriyor
+        ama ZORLAMIYOR. Cikarinca 18 vaka bozuldu: 11 ciplak kurum sorgusunda
+        `subunit` null yerine `no_match` oldu (model kurumun kendi adini
+        birim ifadesi sandi, ikisinde `unit_phrase`e LITERAL 'null' DIZGESI
+        yazdi), 5 vakada olmayan birim uydurdu, 2 vakada gecersiz JSON uretti.
+
+    `verdict` TANIMLARI ("review" ne demek) HER ZAMAN KALIR - onlar semantik
+    icerik, sema onlari zorlamiyor.
     """
 
     name: str = "v1"
-    olu_kurallar: bool = True
+    sema_zorunlu_kurallar: bool = True
+    sema_ornegi: bool = True
 
 
 # Taban: bugunku uretim prompt'u. Butun karsilastirmalar buna gore.
-V1 = PromptVariant(name="v1", olu_kurallar=True)
+V1 = PromptVariant(name="v1")
 
-# Olu kurallar cikarilmis surum (prompt-only; sema DEGISMEZ).
-# Yanlislanabilir tahmin: rapor +333 token eklemenin modeli daha "kararli"
-# yaptigini olctu (auto_match %69->%73, review %3->%1). Iliski gercekse token
-# CIKARMAK ters yonde, yani daha temkinli calismali - prompt'un kendi olcutune
-# gore dogru yon ("alakasiz bir kayda auto_match vermek cok daha pahali").
-V3 = PromptVariant(name="v3", olu_kurallar=False)
+# Her ikisi de cikarilmis surum. 14 Agustos'ta olculdu: 35/125 karar degisti,
+# 16 kazanc (parent temkini) / 18 kayip (null davranisi) - basabas ama iki etki
+# FARKLI bloklardan geliyor ve birbirine karismiyor. Tarihsel referans olarak
+# korunur; ciktisi tests/fixtures/prompt_v3_golden.txt ile kilitli.
+V3 = PromptVariant(name="v3", sema_zorunlu_kurallar=False, sema_ornegi=False)
 
-REGISTRY: dict[str, PromptVariant] = {v.name: v for v in (V1, V3)}
+# v3'un olcumunden dogan varyant: kazandiran blogu cikar, hasar vereni tut.
+# YANLISLANABILIR TAHMIN: v4, v1'e gore parent'ta daha temkinli olmali (v3'un
+# 16 kazanci) ama `null`/subunit davranisini BOZMAMALI (v3'un 18 kaybi
+# tekrarlanmamali). Tahmin tutmazsa hikaye coker: kazanc blok 1+2'den degil
+# salt token azalmasindan geliyor demektir.
+V4 = PromptVariant(name="v4", sema_zorunlu_kurallar=False, sema_ornegi=True)
+
+REGISTRY: dict[str, PromptVariant] = {v.name: v for v in (V1, V3, V4)}
 
 
 def get_variant(name: str) -> PromptVariant:

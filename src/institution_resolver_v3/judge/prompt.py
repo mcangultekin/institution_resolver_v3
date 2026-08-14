@@ -70,22 +70,27 @@ _OUTPUT_BLOCK_SHORT = "ÇIKTI: yalnızca JSON."
 def _apply_variant(text: str, variant: PromptVariant | None) -> str:
     """Varyant donusumlerini URETILMIS prompt'a uygular.
 
-    v1 yolu (variant None ya da `olu_kurallar=True`) metne HIC DOKUNMAZ - bayt
+    v1 yolu (variant None, ya da iki bayrak da acik) metne HIC DOKUNMAZ - bayt
     denklik yapisal olarak garanti, `tests/fixtures/prompt_v1_golden.txt` bunu
-    ayrica kilitler.
+    ayrica kilitler. Iki bayrak BAGIMSIZ uygulanir; cikarma sirasi sabit
+    (once kural bloklari, sonra ÇIKTI blogu) - v3'un 14 Agustos ciktisi
+    `prompt_v3_golden.txt` ile kilitli, refactor onu kaydiramaz.
     """
-    if variant is None or variant.olu_kurallar:
+    if variant is None:
         return text
-    for block in _DEAD_RULE_BLOCKS:
-        if block not in text:
-            raise RuntimeError(
-                "prompt varyanti uygulanamadi: cikarilacak blok metinde bulunamadi "
-                "(prompt degisti mi?). Blok basi: " + block.splitlines()[0][:60]
-            )
-        text = text.replace(block, "", 1)
-    if _OUTPUT_BLOCK_FULL not in text:
-        raise RuntimeError("prompt varyanti uygulanamadi: ÇIKTI blogu bulunamadi")
-    return text.replace(_OUTPUT_BLOCK_FULL, _OUTPUT_BLOCK_SHORT, 1)
+    if not variant.sema_zorunlu_kurallar:
+        for block in _DEAD_RULE_BLOCKS:
+            if block not in text:
+                raise RuntimeError(
+                    "prompt varyanti uygulanamadi: cikarilacak blok metinde bulunamadi "
+                    "(prompt degisti mi?). Blok basi: " + block.splitlines()[0][:60]
+                )
+            text = text.replace(block, "", 1)
+    if not variant.sema_ornegi:
+        if _OUTPUT_BLOCK_FULL not in text:
+            raise RuntimeError("prompt varyanti uygulanamadi: ÇIKTI blogu bulunamadi")
+        text = text.replace(_OUTPUT_BLOCK_FULL, _OUTPUT_BLOCK_SHORT, 1)
+    return text
 
 
 def _fmt_exact(c: CandidateView) -> str:
