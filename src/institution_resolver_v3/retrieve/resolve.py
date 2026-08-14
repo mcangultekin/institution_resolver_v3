@@ -155,6 +155,13 @@ class ScoredCandidate:
     # sadece orta segmentini karsiliyordu ama hakem bayragi "sorgunun tamaminin
     # karsiligi" sanip daha spesifik dogru adayi (Geriatri) gecti).
     exact_match_text: str | None = None
+    # TAM SORGU kanalinin en iyi adayi mi (bkz. `_parent_union`
+    # `full_query_hypothesis`). Kirpma bu adayi sirasindan BAGIMSIZ garanti
+    # tutar - kanal eklemenin tek basina ise yaramadigi OLCULDU (2026-08-14:
+    # ek hipotez listenin sonuna dusuyor, 8'lik kirpma zaten kesiyordu, 0/3
+    # hedef vaka). Sabit butceli bir listeye kanal eklemek TOPLAMALI degil
+    # YER DEGISTIRMELI bir islem; garanti slot olmadan gorunmuyor.
+    from_full_query: bool = False
 
 
 @dataclass
@@ -373,6 +380,63 @@ MAX_CASCADE_PARENTS = 6
 ALT_HYPOTHESIS_CONTRIB = 3
 
 
+def _budget_merge(listeler: list[list[ScoredCandidate]], *, size: int) -> list[ScoredCandidate]:
+    """BUGUNKU birlesim: birincil hipotez `size`, digerleri ALT_HYPOTHESIS_CONTRIB."""
+    ids_seen: set[str] = set()
+    union: list[ScoredCandidate] = []
+    for rank, cands in enumerate(listeler):
+        budget = size if rank == 0 else ALT_HYPOTHESIS_CONTRIB
+        added = 0
+        for c in cands:
+            if added >= budget:
+                break
+            if c.id in ids_seen:
+                continue
+            ids_seen.add(c.id)
+            union.append(c)
+            added += 1
+    return union
+
+
+def _round_robin_merge(listeler: list[list[ScoredCandidate]], *, size: int) -> list[ScoredCandidate]:
+    """SIRALI DAGITIM: her hipotezden birer birer, esit sansla.
+
+    DURUM: OLCULDU, KAPALI BIRAKILDI (2026-08-14). Tek gercek etkisi olan
+    varyant bu - "Çanakkale On sekiz Mart Üniversitesi" havuzda 10. siradan
+    2.'ye cikiyor ve hakemin listesine giriyor. AMA 125 sorgunun 112'sinde
+    havuzu degistiriyor; bu artik bir ayar degil farkli bir retrieval davranisi
+    ve GOLD OLMADAN degerlendirilemez (degisimi olcebiliyoruz, iyilesme olup
+    olmadigini olcemiyoruz). Kavramsal olarak savunulabilir oldugu icin
+    silinmedi; acmak gold sonrasi bir karar.
+
+    NEDEN (olculdu 2026-08-14): bugunku dagitim birincil hipoteze havuzun ilk
+    `size` slotunu veriyor. decompose'un birincili YANLISSA (125 sorgunun
+    32'sinde birincil tek-tokenlik bir akronim carpismasi: 'On'->Opera Network,
+    'Tıp'->Technological Institute of the Philippines, 'and'->Advanced Neural
+    Dynamics) hakemin gordugu 8 slotun 5'i copten olusuyor ve DOGRU kayit
+    listeden dusuyor - "Çanakkale On sekiz Mart Üniversitesi" havuzda 10.
+    siradaydi, sirali dagitimda 2. sıraya cikiyor.
+
+    Bu ayni zamanda modulun KENDI ilkesine donus: decompose.py docstring'i
+    "KARAR DEGIL HIPOTEZ - secimi asagi katmanlar yapar" diyor, ama butce
+    dagilimi birincili secmis oluyordu.
+
+    Toplam aday sayisi bugunku semayla AYNI tutulur ki olculen tek sey SIRA
+    (ve ondan tureyen uyelik) olsun, havuz buyuklugu degil.
+    """
+    toplam = size + ALT_HYPOTHESIS_CONTRIB * max(len(listeler) - 1, 0)
+    ids_seen: set[str] = set()
+    union: list[ScoredCandidate] = []
+    for i in range(max((len(c) for c in listeler), default=0)):
+        for cands in listeler:
+            if len(union) >= toplam:
+                return union
+            if i < len(cands) and cands[i].id not in ids_seen:
+                ids_seen.add(cands[i].id)
+                union.append(cands[i])
+    return union
+
+
 def _parent_union(
     decomposed,
     query: str,
@@ -383,6 +447,8 @@ def _parent_union(
     cosine_fn: CosineFn,
     fetch_docs_fn: FetchDocsFn,
     strict_exact: bool = False,
+    full_query_hypothesis: bool = False,
+    equal_hypothesis_budget: bool = False,
 ) -> list[ScoredCandidate]:
     """Her hipotezin kurum kismiyla ayri parent aramasi; recall-guvenli birlesim.
 
@@ -397,31 +463,57 @@ def _parent_union(
     kelimeye zaten toleransli, dogru parent tam sorguya karsi da 100 alir.
     """
     parts_seen: set[str] = set()
-    ids_seen: set[str] = set()
-    union: list[ScoredCandidate] = []
-    for rank, hyp in enumerate(decomposed.hypotheses or [decomposed]):
-        part = hyp.institution_part
+    listeler: list[list[ScoredCandidate]] = []
+
+    parcalar = [h.institution_part for h in (decomposed.hypotheses or [decomposed])]
+    if full_query_hypothesis:
+        # DURUM: OLCULDU VE REDDEDILDI (2026-08-14). Uc bicimde denendi, ucu de
+        # ya etkisiz ya zararli cikti - bir daha denenmesin diye sayilariyla:
+        #   (1) duz kanal ekleme          -> 0/3 hedef vaka, 9/125 havuz degisimi.
+        #       ETKISIZ: ek hipotez listenin SONUNA dusuyor, 8'lik kirpma zaten
+        #       kesiyor. Sabit butceli bir listeye kanal eklemek TOPLAMALI degil
+        #       YER DEGISTIRMELI bir islem - bu baslangicta yanlis varsayilmisti.
+        #   (2) + esit butce (round-robin) -> 1/3 hedef, 118/125 havuz degisimi.
+        #       Vekil metrik carpici duzeliyor (%21 -> %3) ama etki yuzeyi
+        #       degerlendirilemeyecek kadar buyuk.
+        #   (3) kirpmada garanti slot     -> 0/3 hedef, 32/125 degisim, kontrol
+        #       grubu saglam (0/15) AMA eklenen adaylar agirlikla GURULTU
+        #       ("Gaziantep Büyükşehir Belediyesi" -> Gaziantep Şehir Hastanesi)
+        #       ve daha iyi adaylari dusuruyor.
+        # KOK NEDEN: tam-sorgu aramasi, sorgu COGUNLUKLA kurum adiysa iyi
+        # calisir; zor vakalar tam tersi (uzun afiliasyon metni - birim + konum
+        # + unvan), orada BM25 kurum kismina degil birim/konum kelimelerine
+        # takiliyor. Yani kanalin 1. adayi cogu zaman yanlis.
+        #
+        # TAM SORGU ek hipotez olarak. Bugun parent YALNIZ `institution_part`
+        # parcalariyla araniyor; tam sorgu parent tarafinda HIC kullanilmiyor
+        # (subunit tarafinda kullaniliyor). Olculdu (2026-08-14, 125 sorgu):
+        # tam-sorgu aramasinin 1. adayi hakemin gordugu listede 26 sorguda (%21)
+        # HIC YOK - ve iki felaket vakada dogru cevap tam sorguda 1./2. sirada
+        # cikiyor ("Çanakkale On sekiz Mart...", "Azerbaycan Milli İlimler...").
+        # Bu bir SECIM degil HEDGE: hicbir sey elenmez, bir kanal eklenir.
+        parcalar.append(query)
+
+    for sira, part in enumerate(parcalar):
         if not part or part in parts_seen:
             continue
         parts_seen.add(part)
+        tam_sorgu_kanali = full_query_hypothesis and sira == len(parcalar) - 1
         merged, bm25, knn, max_bm25 = _pool_with_raw_scores(
             part, "parent", extra_filters=None, size=size,
             search_fn=search_fn, search_knn_fn=search_knn_fn, cosine_fn=cosine_fn,
         )
-        cands = _attach_signals(
+        kanal = _attach_signals(
             merged, bm25_by_id=bm25, knn_by_id=knn, max_bm25=max_bm25, query_text=query,
             strict_exact=strict_exact,
         )
-        budget = size if rank == 0 else ALT_HYPOTHESIS_CONTRIB
-        added = 0
-        for c in cands:
-            if added >= budget:
-                break
-            if c.id in ids_seen:
-                continue
-            ids_seen.add(c.id)
-            union.append(c)
-            added += 1
+        if tam_sorgu_kanali and kanal:
+            kanal[0].from_full_query = True   # kirpmada garanti slot
+        listeler.append(kanal)
+
+    birlestir = _round_robin_merge if equal_hypothesis_budget else _budget_merge
+    union = birlestir(listeler, size=size)
+    ids_seen: set[str] = {c.id for c in union}
 
     # Hipotezin isaret ettigi parent, havuz aramalarinin top-K'sina girmemis
     # olabilir (canli ornek: "JAMSTEC," aramasinda dogru kayit rank 7'de, kisa
@@ -515,6 +607,8 @@ def resolve(
     fetch_docs_fn: FetchDocsFn = _default_fetch_docs,
     encode_prewarm: bool = False,
     strict_exact: bool = False,
+    full_query_hypothesis: bool = False,
+    equal_hypothesis_budget: bool = False,
 ) -> ResolveResult:
     """Coklu-hipotezli, recall-yonelimli cascade: her hipotezle parent ara ve
     birlestir, subunit'i makul parent'larin tamamiyla (terms) filtrele +
@@ -559,6 +653,8 @@ def resolve(
     parents = _parent_union(
         decomposed, query, size=size, search_fn=search_fn, search_knn_fn=search_knn_fn,
         cosine_fn=cosine_fn, fetch_docs_fn=fetch_docs_fn, strict_exact=strict_exact,
+        full_query_hypothesis=full_query_hypothesis,
+        equal_hypothesis_budget=equal_hypothesis_budget,
     )
 
     cascade_ids = _cascade_parent_ids(parents, decomposed)

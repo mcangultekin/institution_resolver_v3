@@ -48,6 +48,7 @@ class CandidateView:
     kind_label: str | None = None
     parent_name: str | None = None
     parent_id: str | None = None  # subunit'te doldurulur - judge._validate_ids capraz kontrolu icin
+    from_full_query: bool = False  # tam-sorgu kanalinin en iyi adayi (bkz. _trim)
 
 
 def _parent_view(c: ScoredCandidate) -> CandidateView:
@@ -64,6 +65,7 @@ def _parent_view(c: ScoredCandidate) -> CandidateView:
         best_alias=c.best_alias,
         country=c.raw.get("country"),
         city=c.raw.get("city"),
+        from_full_query=c.from_full_query,
     )
 
 
@@ -94,7 +96,13 @@ def _trim(views: list[CandidateView], max_candidates: int) -> list[CandidateView
     adaylari sirasindan bagimsiz garanti tutar (bkz. modul docstring'i)."""
     if len(views) <= max_candidates:
         return views
-    keep_ids: set[str] = {v.id for v in views if v.exact_match}
+    # exact_match'e ek olarak TAM SORGU kanalinin en iyi adayi da garanti tutulur.
+    # Gerekce olculdu (2026-08-14): parent aramasi bugun YALNIZ decompose'un
+    # `institution_part` parcalariyla yapiliyor, tam sorgu parent tarafinda HIC
+    # kullanilmiyor; sonucu 125 sorgunun 26'sinda (%21) tam-sorgu aramasinin 1.
+    # adayi hakemin listesinde hic gorunmuyor. Kanali eklemek TEK BASINA yetmedi
+    # (ek hipotez listenin sonuna dusuyor, kirpma kesiyor) - garanti slot sart.
+    keep_ids: set[str] = {v.id for v in views if v.exact_match or v.from_full_query}
     for v in views:
         if len(keep_ids) >= max(max_candidates, len(keep_ids)):
             break
