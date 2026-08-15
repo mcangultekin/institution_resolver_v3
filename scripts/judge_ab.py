@@ -102,6 +102,16 @@ ARMS: dict[str, dict] = {
           "pool_gate": "parent"},
     "E": {"variant": "v1", "strict_exact": False, "max_candidates": 8,
           "pool_gate": "parent_filtered"},
+    # V4E: iki ayri katmanin BIRLESIMI - v4 prompt'ta temkin kazandiriyor
+    #   (yanlis auto_match'leri no_match'e ceviriyor), E hakem sonrasi kalanlari
+    #   review'a indiriyor. Offline hesaplandi (2026-08-14, v4'un GERCEK
+    #   kararlari + yerelde yeniden hesaplanan havuzlar): 71 -> 51 auto_match,
+    #   13 indirgemenin 8'i gercekten yanlis cevapti (2:1). Ustelik E, v4'un
+    #   KENDI regresyonlarindan birini yakaliyor ("Chaitanya deemed to be
+    #   university" -> BLDE: v4 review'dan auto'ya yukseltmisti).
+    #   Bu kol o offline hesabi TEK OTURUMDA dogrulamak icin.
+    "V4E": {"variant": "v4", "strict_exact": False, "max_candidates": 8,
+            "pool_gate": "parent_filtered"},
 }
 
 

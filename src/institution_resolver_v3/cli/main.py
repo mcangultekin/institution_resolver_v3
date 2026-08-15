@@ -475,6 +475,12 @@ def inventory_batch_cmd(
         1, "--workers",
         help="es-zamanli isci sayisi (deney, 2026-08-11: 4'te ~2,2x, 8'de kazanc geriliyor)",
     ),
+    pool_gate: str = typer.Option(
+        "chosen", "--pool-gate",
+        help="havuz kalitesi kapisi: chosen | parent_filtered | none "
+             "(varsayilan chosen - secilen kayit sorgunun kimlik kelimesini "
+             "tasimiyorsa auto_match -> review)",
+    ),
 ) -> None:
     """Envanter modu: `institution-field-inventory.csv`'nin parent'i BOS satirlari.
 
@@ -529,13 +535,13 @@ def inventory_batch_cmd(
 
     typer.echo(
         f"Envanter modu basliyor: {src} ({len(rows)} sorgu, kolon='{query_col}', "
-        f"hakem={model_label}) -> {out}",
+        f"hakem={model_label}, prompt=v4, kapi={pool_gate}, isci={workers}) -> {out}",
         err=True,
     )
     summary = run_inventory_batch(
         rows, out, client=client, judge_enabled=judge,
         limit=limit, resume=resume, top=top, on_progress=_progress,
-        max_workers=workers,
+        max_workers=workers, pool_gate=None if pool_gate == "none" else pool_gate,
     )
     typer.echo(
         f"\nBITTI: ok={summary['ok']}  hata={summary['error']}  atlandi={summary['skipped']}"

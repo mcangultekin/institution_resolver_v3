@@ -41,6 +41,17 @@ from institution_resolver_v3.gate.gate import gate as _gate
 from institution_resolver_v3.judge.judge import judge as _judge
 from institution_resolver_v3.judge.schema import ParentDecision, SubunitDecision
 from institution_resolver_v3.retrieve.resolve import resolve as _resolve
+from institution_resolver_v3.retrieve.token_df import gate_pool, load_token_df, orphan_tokens
+
+# HAVUZ KALITESI KAPISI - uretim varsayilani (2026-08-15 karari).
+# "chosen": oksuz-token kontrolu YALNIZ secilen kayda (+ ona bagli subunit
+# adaylarina) bakar. "parent_filtered" tum havuza bakar ve bu yuzden kimlik
+# kelimesini BASKA bir aday tasiyorsa sessiz kalir - olculen kor nokta:
+#   "University of South Australia" -> secilen: University of South Alabama
+#   'australia' havuzda VAR (baska aday) -> parent_filtered atesleMEZ, chosen ATESLER
+# 30 satirlik nokta kontrolunde bulunan IKI hatanin ikisi de bu siniftandi.
+# Bedeli olculdu: auto_match %40 -> %35 (143 binde ~7 bin ek inceleme).
+DEFAULT_POOL_GATE = "chosen"
 
 FIELDNAMES = [
     "query",
@@ -68,6 +79,12 @@ FIELDNAMES = [
     # --- denetim ---
     "gate_parent_verdict",
     "gate_subunit_verdict",
+    # havuz kapisi (bkz. DEFAULT_POOL_GATE) - hangi ayarla kosuldugu ve
+    # ateşleyip ateşlemedigi satirda dursun, sonradan denetlenebilsin
+    "pool_gate",
+    "gate_orphan_fired",
+    "orphan_tokens",
+    "prompt_variant",
     "unit_phrase",
     "needs_review",     # 1 = insan kuyruguna dussun
     "judged",           # 1 = LLM hakem calisti
@@ -157,6 +174,8 @@ def process_one_inventory(
     judge_fn: Callable = _judge,
     top: int = 5,
     context: dict[str, str] | None = None,
+    pool_gate: str | None = DEFAULT_POOL_GATE,
+    token_df: dict[str, int] | None = None,
 ) -> dict[str, str]:
     """Tek sorgu: resolve -> gate -> (gerekiyorsa yalniz PARENT icin) hakem.
 
@@ -165,6 +184,8 @@ def process_one_inventory(
     durmasin (eval/batch.py ile ayni ilke).
     """
     rec = _blank_record(query)
+    rec["pool_gate"] = pool_gate or ""
+    rec["prompt_variant"] = "v4"   # judge.DEFAULT_VARIANT
     if context:
         rec["normalized_name"] = context.get("normalized_name", "")
         rec["rows"] = context.get("rows", "")
@@ -193,6 +214,23 @@ def process_one_inventory(
         rec["judged"] = "1" if judged else "0"
 
         if judged and j is not None:
+            # HAVUZ KALITESI KAPISI - yalniz HAKEM karari uzerinde.
+            # Gate'in kendi `auto_match`i span>=2 exact kanitina dayaniyor
+            # (gate.MIN_EXACT_SPAN) ve bu kapiyla hic olculmedi; olculmemis bir
+            # yola dokunmuyoruz.
+            if pool_gate and j.parent.matched_id:
+                oksuz = orphan_tokens(
+                    query, gate_pool(res, pool_gate, chosen_id=j.parent.matched_id),
+                    token_df if token_df is not None else load_token_df(),
+                )
+                rec["gate_orphan_fired"] = "1" if oksuz else "0"
+                rec["orphan_tokens"] = ",".join(oksuz[:6])
+                if oksuz and j.parent.verdict == "auto_match":
+                    # INDIRGEME, sert no_match DEGIL: kimlik korunur, yalniz
+                    # guven duser. Satir kuyruga dusér ama bilgi kaybolmaz.
+                    j.parent.verdict = "review"
+                    if j.subunit is not None and j.subunit.verdict == "auto_match":
+                        j.subunit.verdict = "review"
             _write_side(rec, "parent", j.parent, res.parents, accepted=True, decided_by="judge")
             # Hakem calistiysa subunit cevabi bedava - kural "subunit ICIN LLM'e
             # gitme"ydi, gelen cevabi atmak degil (bkz. modul docstring 1).
@@ -253,6 +291,7 @@ def run_inventory_batch(
     resume: bool = False,
     on_progress: ProgressFn | None = None,
     max_workers: int = 1,
+    pool_gate: str | None = DEFAULT_POOL_GATE,
 ) -> dict[str, Any]:
     """Girdi satirlarini (query + normalized_name + rows) isleyip CSV'ye yazar.
 
@@ -266,6 +305,14 @@ def run_inventory_batch(
     Kararlar isci sayisindan bagimsiz birebir ayni cikti (0 fark, 300/300).
     """
     rows = list(rows)
+    # df haritasi BIR KEZ yuklenir (yoksa katalogdan uretilir, ~3 sn) - her
+    # satirda yeniden okumak 287 bin satirda anlamsiz maliyet olurdu.
+    tdf = load_token_df() if pool_gate else None
+    if pool_gate and not tdf:
+        raise RuntimeError(
+            "havuz kapisi istendi ama token df uretilemedi "
+            "(data/processed/parent_canonical.jsonl yok)"
+        )
     ctx = {
         r["query"]: {"normalized_name": r.get("normalized_name", ""), "rows": r.get("rows", "")}
         for r in rows
@@ -281,6 +328,8 @@ def run_inventory_batch(
             judge_fn=judge_fn,
             top=top,
             context=ctx.get(query),
+            pool_gate=pool_gate,
+            token_df=tdf,
         )
 
     return run_csv_batch(

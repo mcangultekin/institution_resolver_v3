@@ -13,8 +13,9 @@ from institution_resolver_v3.retrieve.token_df import (
 
 
 class _Aday:
-    def __init__(self, name, aliases=(), passed=None):
+    def __init__(self, name, aliases=(), passed=None, id=None):
         self.name = name
+        self.id = id
         self.raw = {"aliases": list(aliases)}
         self.passed_parent_filter = passed
 
@@ -93,4 +94,28 @@ class TestGatePool:
             gate_pool(R(), "hepsi")
 
     def test_modes_declared(self):
-        assert GATE_MODES == ("parent", "parent_filtered")
+        assert GATE_MODES == ("parent", "parent_filtered", "chosen")
+
+    def test_chosen_mode_scans_only_selected_record(self):
+        """Olculen kor nokta (2026-08-14): havuz seviyesi kapsama, kimlik
+        token'ini BASKA bir aday tasiyorsa sessiz kaliyordu - secilen kayit
+        onu tasimasa bile ("University of South Australia" -> secilen
+        University of South Alabama, ama 'australia' havuzda baska yerde VAR)."""
+        class R:
+            parents = [_Aday("University of South Alabama"), _Aday("Australia Institute")]
+            subunits = []
+        havuz = gate_pool(R(), "chosen", chosen_id=None)
+        assert havuz == []
+        R.parents[0].id = "1"
+        secilen = gate_pool(R(), "chosen", chosen_id="1")
+        assert [c.name for c in secilen] == ["University of South Alabama"]
+
+    def test_chosen_mode_includes_own_subunits(self):
+        class R:
+            parents = [_Aday("Ege Üniversitesi")]
+            subunits = [_Aday("TIP FAKÜLTESİ"), _Aday("BAŞKA BİRİM")]
+        R.parents[0].id = "152"
+        R.subunits[0].raw["parent_id"] = "152"
+        R.subunits[1].raw["parent_id"] = "999"
+        assert [c.name for c in gate_pool(R(), "chosen", chosen_id="152")] == [
+            "Ege Üniversitesi", "TIP FAKÜLTESİ"]

@@ -53,3 +53,12 @@ llm_cache/
 # oldugunu satir satir tasiyor - gercek kisisel/kurumsal veri, versiyonlanmaz.
 # Normalize edilmis turevi de ayni veriyi tasir.
 institution-field-inventory*.csv
+
+# Gercek sirket sorgulari - repo PUBLIC, hicbiri commit edilmez
+data/eval/
+faz0_sonuc/
+# Katalogdan ~3 sn'de uretilen tureviler (kaynak JSONL zaten ignore'lu)
+data/processed/token_df.json
+data/processed/query_token_df.json
+# Ekran goruntuleri
+*.png

@@ -28,7 +28,14 @@ from institution_resolver_v3.judge.candidates import (
 from institution_resolver_v3.judge.client import LlmClient
 from institution_resolver_v3.judge.prompt import build_prompt
 from institution_resolver_v3.judge.schema import JudgeResult, SubunitDecision
-from institution_resolver_v3.judge.variants import PromptVariant
+from institution_resolver_v3.judge.variants import V4, PromptVariant
+
+# URETIM VARSAYILANI (2026-08-15, olcume dayali karar): v4.
+# 125 sorguda v1'e karsi 27 iyi / 8 kotu; sema'nin zaten fiziksel olarak
+# zorladigi iki kural blogunu prompt'tan cikariyor, sema ORNEGINI tutuyor
+# (ucunu birden cikarmak - v3 - `null` davranisini bozuyordu, bkz. variants.py).
+# `variant=None` HALA ham v1 metnini verir; bu yalnizca judge()'in varsayilani.
+DEFAULT_VARIANT = V4
 from institution_resolver_v3.retrieve.resolve import ResolveResult
 
 
@@ -298,15 +305,14 @@ def judge(
     resolve_result: ResolveResult,
     client: LlmClient,
     *,
-    variant: PromptVariant | None = None,
+    variant: PromptVariant | None = DEFAULT_VARIANT,
     max_candidates: int = DEFAULT_MAX_CANDIDATES,
 ) -> JudgeResult:
     """resolve() ciktisini hakeme sorar, dogrulanmis `JudgeResult` doner.
 
-    `variant` (A/B olcumu icin, bkz. judge/variants.py + scripts/judge_ab.py):
-    VERILMEZSE uretim yolu birebir korunur - prompt bugunkuyle BAYT-DENK, sema
-    degismez. Uretim cagiranlarinin (decide/, jobs/, api/, eval/) hicbiri bu
-    parametreyi gecmez.
+    `variant` VARSAYILANI **v4** (bkz. DEFAULT_VARIANT). Uretim cagiranlari
+    (decide/, jobs/, api/, eval/) parametre gecmez ve otomatik olarak v4 kullanir.
+    Tarihsel v1 metni icin `variant=V1` acikca gecilir (A/B tezgahi boyle yapar).
 
     `max_candidates`: hakeme gosterilen aday sayisi. Varsayilan 8'in gerekcesi
     candidates.py docstring'inde (2026-07-24 "Ege" bulgusu: 18 adayli liste

@@ -179,15 +179,31 @@ def orphan_tokens(
 # NOT: TUM subunit havuzunu katmak DENENDI VE ATILDI - 125 bin kayitlik filtresiz
 # havuzda hemen her Turkce yer adi geciyor, sinyal seyreliyor (kapi 60->33 dustu
 # ama kesinlik %30->%27, yani dogru atesleme de kayboldu).
-GATE_MODES = ("parent", "parent_filtered")
+GATE_MODES = ("parent", "parent_filtered", "chosen")
 
 
-def gate_pool(resolve_result, mode: str) -> list:
-    """Kapinin kapsama icin tarayacagi aday listesi."""
+def gate_pool(resolve_result, mode: str, chosen_id: str | None = None) -> list:
+    """Kapinin kapsama icin tarayacagi aday listesi.
+
+    "chosen" modu OLCULEN BIR KOR NOKTADAN dogdu (2026-08-14): havuz seviyesi
+    kapsama, sorgunun kimlik token'ini havuzdaki BASKA bir aday tasiyorsa
+    sessiz kaliyor - secilen kayit onu tasimasa bile.
+        "University of South Australia" -> secilen: University of South Alabama
+        'australia' havuzda VAR (baska bir aday tasiyor) -> kapi atesleMEDI
+    "chosen" modunda yalniz SECILEN kayit ve ona bagli subunit adaylari taranir.
+    Bedeli beklenen: birim kelimeleri ('iisbf', 'rheumatology') artik her
+    seferinde oksuz kalir -> yanlis indirgeme artar. Odun OLCULECEK.
+    """
     if mode == "parent":
         return list(resolve_result.parents)
     if mode == "parent_filtered":
         return list(resolve_result.parents) + [
             s for s in resolve_result.subunits if s.passed_parent_filter
+        ]
+    if mode == "chosen":
+        if chosen_id is None:
+            return []
+        return [c for c in resolve_result.parents if c.id == chosen_id] + [
+            s for s in resolve_result.subunits if s.raw.get("parent_id") == chosen_id
         ]
     raise ValueError(f"bilinmeyen kapi modu {mode!r} - {GATE_MODES}")
