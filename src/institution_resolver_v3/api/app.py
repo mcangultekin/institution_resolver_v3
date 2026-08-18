@@ -26,7 +26,7 @@ from institution_resolver_v3.api.routers import single as single_router
 from institution_resolver_v3.api.schemas import HealthResponse
 from institution_resolver_v3.config import load_config
 from institution_resolver_v3.elastic.client import get_client
-from institution_resolver_v3.embedding.encoder import get_model
+from institution_resolver_v3.embedding.encoder import get_model, is_loaded
 from institution_resolver_v3.judge.client import OllamaClient
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -75,7 +75,7 @@ def create_app() -> FastAPI:
             ollama_ok = r.status_code == 200
         except Exception:  # noqa: BLE001
             ollama_ok = False
-        return HealthResponse(status="ok", es=es_ok, ollama=ollama_ok)
+        return HealthResponse(status="ok", es=es_ok, ollama=ollama_ok, embedding_model=is_loaded())
 
     return app
 

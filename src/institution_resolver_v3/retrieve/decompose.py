@@ -97,7 +97,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from itertools import zip_longest
+
 from rapidfuzz import fuzz
+
+# acronym_guard esikleri - olculen carpismalardan tureildi (2026-08-17):
+# 'maden'(5)~'MADE'(4)=88.9, 'dali'(4)~'DLI'(3)=85.7, 'van'(3)~'VAI'(3)=66.7
+_AKRONIM_ARALIK = 6   # bu uzunluga kadarki aralik "kisa" sayilir
+_AKRONIM_ALIAS = 5    # bu uzunluga kadarki alias "akronim" sayilir
 
 from institution_resolver_v3.normalize.query_pipeline import expand_query_text, normalize
 
@@ -206,6 +213,33 @@ def decompose(
     # "University of Münster" @ rank 6) top-5 disina itebiliyor - canli olculdu.
     # Ek ES cagrisi yok, sadece pencere basina daha fazla ucuz fuzz.ratio.
     top_k: int = 10,
+    # --- DUZELTME ADAYLARI (2026-08-17, hepsi VARSAYILAN KAPALI) ---
+    # Olculen defekt: kisa aralik + kisa akronim alias'i = yuksek fuzz.ratio
+    #   'maden' vs 'MADE' = 88.9  -> Manufacturing Academy of Denmark
+    # Dogru kayit ise uzunluk cezasi yer:
+    #   'Maden Tetkik ve Arama' vs 'Maden Tetkik ve Arama Genel Mudurlugu' = 72.4
+    # Skor aralik uzunluguna gore normalize EDILMIYOR ama siralama farkli
+    # uzunluktaki araliklari yaristiriyor.
+    #
+    # A) min_span_chars: bu uzunlugun altindaki aralik hipotez URETEMEZ.
+    #    En dogrudan cozum; bedeli gercek kisa kurum adlari ("MIT", "CERN").
+    min_span_chars: int = 0,
+    # B) coverage_weight: skoru araligin sorguyu kapsama oranina gore olcekler
+    #    (skor * (kapsama ** w)). Kisa aralik cezalanir, uzun aralik korunur;
+    #    sert esik yerine surekli - kisa gercek adlari tamamen elemez.
+    coverage_weight: float = 0.0,
+    # C) acronym_guard: aralik kisa VE alias kisa ise o alias sayilmaz.
+    #    Sadece carpismanin kaynagini hedefler, uzun eslesmelere dokunmaz.
+    acronym_guard: bool = False,
+    # D) dual_weight: TEK yon secmek yerine IKI siralamayi harmanlar.
+    #    Birincil hipotez HAM skorla secilir - `unit_part` ve dolayisiyla
+    #    subunit yolu bozulmaz (coverage_weight'in olculen bedeli buydu:
+    #    subunit ilk8 %99 -> %87). Kapsama-agirlikli siralamanin kazanani
+    #    ikinci sıradan itibaren havuza girer, yani kurum tarafi kazanir.
+    #    Bedeli: sabit hipotez butcesinde yer kaplar (yerini baskasina
+    #    aciyor, EKLEMIYOR - 2026-08-14'te olculen "kanal ekleme yer degistirir"
+    #    dersi). Etkisi olculmeli.
+    dual_weight: float = 0.0,
 ) -> DecomposedQuery:
     """Sorguyu kurum/birim kismina ayirir (bkz. modul docstring'i - yontem).
 
@@ -234,12 +268,16 @@ def decompose(
     # Span'ler ESKI ile AYNI sirada (start dis, end ic) - `order` sayaci ve
     # esitlik-bozma bu sirayla ozdes kalsin.
     spans = [(start, end) for start in range(n) for end in range(start + 1, n + 1)]
+    if min_span_chars:
+        spans = [(s_, e_) for s_, e_ in spans
+                 if len(" ".join(norm_tokens[s_:e_])) >= min_span_chars] or spans
     span_results = search_many_fn([" ".join(surface_tokens[s:e]) for s, e in spans], "parent")
 
     # Parent basina EN IYI (skor, esitlikte uzun aralik, esitlikte ilk gorulen)
     # aday aralik tutulur - tek global kazanan yerine hipotez havuzu.
     # deger: (score, length, order, start, end, name)
     best_by_parent: dict[str, tuple[float, int, int, int, int, str | None]] = {}
+    best_cov: dict[str, tuple[float, int, int, int, int, str | None]] = {}
     order = 0
 
     for (start, end), hits_all in zip(spans, span_results):
@@ -262,10 +300,27 @@ def decompose(
             # Alias'lar TEK TEK karsilastirilir (uzunluk-duyarli
             # ratio korunur); birlesik metne partial_ratio KULLANILMAZ
             # (jenerik pencere tuzagi - bkz. mappings.py "aliases" notu).
-            score = max(
-                fuzz.ratio(candidate_norm, normalize(v).base_no_accent)
-                for v in _name_variants(hit)
-            )
+            varyantlar = [normalize(v).base_no_accent for v in _name_variants(hit)]
+            if acronym_guard and len(candidate_norm) <= _AKRONIM_ARALIK:
+                # Kisa aralik, kisa alias'a carpiyor: 'maden'~'MADE',
+                # 'dali'~'DLI', 'van'~'VAI'. Uzun varyant kalirsa gercek
+                # eslesme yine bulunur; sadece akronim gurultusu susar.
+                uzun = [v for v in varyantlar if len(v) > _AKRONIM_ALIAS]
+                varyantlar = uzun or varyantlar
+            ham = max(fuzz.ratio(candidate_norm, v) for v in varyantlar)
+            if dual_weight:
+                # Her iki olcek de parent basina AYRI tutulur; ayni parent
+                # icin en iyi ARALIK iki olcekte farkli cikabilir.
+                agirlikli = ham * (length / n) ** dual_weight
+                c2 = best_cov.get(pid)
+                if c2 is None or agirlikli > c2[0] or (agirlikli == c2[0] and length > c2[1]):
+                    best_cov[pid] = (agirlikli, length, order, start, end, hit.get("name"))
+            score = ham
+            if coverage_weight:
+                # Kapsama = araligin sorgudaki token payi. Uzunluk bilgisini
+                # skorun ICINE tasir; siralama artik farkli uzunluktaki
+                # araliklari ayni olcekte kiyaslar.
+                score *= (length / n) ** coverage_weight
             cur = best_by_parent.get(pid)
             # esitlikte DAHA UZUN araligi tercih et (bilesik ad durumu)
             if cur is None or score > cur[0] or (score == cur[0] and length > cur[1]):
@@ -283,6 +338,21 @@ def decompose(
     ranked = sorted(
         best_by_parent.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[1][2])
     )[:MAX_HYPOTHESES]
+
+    if dual_weight and best_cov:
+        # Sirayla al: ham, kapsama, ham, kapsama... Birincil (0. sira) HAM
+        # kalir - subunit yolu icin kritik. Tekrar eden parent atlanir.
+        cov_sirali = sorted(
+            best_cov.items(), key=lambda kv: (-kv[1][0], -kv[1][1], kv[1][2])
+        )
+        harman, gorulen = [], set()
+        for ham_kv, cov_kv in zip_longest(ranked, cov_sirali[:MAX_HYPOTHESES]):
+            for kv in (ham_kv, cov_kv):
+                if kv is not None and kv[0] not in gorulen:
+                    gorulen.add(kv[0])
+                    # skorlar farkli olceklerde; asagida yalnizca sira onemli
+                    harman.append((kv[0], best_by_parent[kv[0]]))
+        ranked = harman[:MAX_HYPOTHESES]
 
     hypotheses = [
         BoundaryHypothesis(

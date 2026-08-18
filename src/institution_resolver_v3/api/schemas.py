@@ -124,7 +124,7 @@ class DecideResponse(BaseModel):
 
 class JobSubmitResponse(BaseModel):
     job_id: str
-    kind: Literal["gate", "judge", "decide"]
+    kind: Literal["gate", "judge", "decide", "inventory"]
     status: str
 
 
@@ -146,3 +146,4 @@ class HealthResponse(BaseModel):
     status: str
     es: bool
     ollama: bool
+    embedding_model: bool

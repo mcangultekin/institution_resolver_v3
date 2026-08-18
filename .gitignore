@@ -51,8 +51,15 @@ llm_cache/
 
 # Uretim envanteri: hangi kaydin (yazar/hakem/kullanici) hangi kuruma bagli
 # oldugunu satir satir tasiyor - gercek kisisel/kurumsal veri, versiyonlanmaz.
-# Normalize edilmis turevi de ayni veriyi tasir.
+# 2026-08-18: data/inventory/ altina tasindi + yeniden adlandirildi (raw.csv,
+# normalized.csv, summary.csv vb.) - eski isim-bazli kural artik eslesmiyordu,
+# klasor bazina cevrildi.
 institution-field-inventory*.csv
+data/inventory/
+
+# Gercek uretim sorgu sonuclari (bakanlik/kurum eslestirme denemeleri) -
+# docs/ altinda dursa da ayni kisisel/kurumsal veri kategorisi, versiyonlanmaz.
+docs/temiz_sonuc_*.csv
 
 # Gercek sirket sorgulari - repo PUBLIC, hicbiri commit edilmez
 data/eval/
@@ -62,3 +69,6 @@ data/processed/token_df.json
 data/processed/query_token_df.json
 # Ekran goruntuleri
 *.png
+
+# Uretim kosusu ciktilari - gercek sirket sorgulari, repo PUBLIC
+main_batch/

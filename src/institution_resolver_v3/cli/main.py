@@ -482,7 +482,8 @@ def inventory_batch_cmd(
              "tasimiyorsa auto_match -> review)",
     ),
 ) -> None:
-    """Envanter modu: `institution-field-inventory.csv`'nin parent'i BOS satirlari.
+    """Envanter modu: `data/inventory/raw.csv`'nin (eski adi:
+    institution-field-inventory.csv) parent'i BOS satirlari.
 
     Normal akistan farki (bkz. jobs/inventory.py): subunit hakemi TETIKLEMEZ
     (yalniz gate auto_match ise karar yazilir), sorgu-ici toplu kodlama acik,

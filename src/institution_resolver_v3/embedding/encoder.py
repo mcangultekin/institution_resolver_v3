@@ -29,6 +29,13 @@ def get_model(name: str | None = None, device: str | None = None) -> Any:
     return _model
 
 
+def is_loaded() -> bool:
+    """Modelin bellekte hazir olup olmadigini soyler - `/health` bunun icin
+    kullanir; `get_model()`'in aksine YUKLEMEYI TETIKLEMEZ (saglik kontrolu
+    yan etkisiz kalmali)."""
+    return _model is not None
+
+
 def _pick_device() -> str:
     try:
         import torch

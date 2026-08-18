@@ -449,6 +449,9 @@ def _parent_union(
     strict_exact: bool = False,
     full_query_hypothesis: bool = False,
     equal_hypothesis_budget: bool = False,
+    # decompose duzeltme adaylarini olcum icin gecirir (min_span_chars,
+    # coverage_weight, acronym_guard). Uretimde BOS - davranis degismez.
+    decompose_kwargs: dict | None = None,
 ) -> list[ScoredCandidate]:
     """Her hipotezin kurum kismiyla ayri parent aramasi; recall-guvenli birlesim.
 
@@ -609,6 +612,9 @@ def resolve(
     strict_exact: bool = False,
     full_query_hypothesis: bool = False,
     equal_hypothesis_budget: bool = False,
+    # decompose duzeltme adaylarini olcum icin gecirir (min_span_chars,
+    # coverage_weight, acronym_guard). Uretimde BOS - davranis degismez.
+    decompose_kwargs: dict | None = None,
 ) -> ResolveResult:
     """Coklu-hipotezli, recall-yonelimli cascade: her hipotezle parent ara ve
     birlestir, subunit'i makul parent'larin tamamiyla (terms) filtrele +
@@ -633,7 +639,8 @@ def resolve(
         dsm = lambda texts, rt: search_many(texts, rt, size=10)  # noqa: E731
     else:
         dsm = lambda texts, rt: [dsf(t, rt) for t in texts]  # noqa: E731
-    decomposed = decompose(query, search_fn=dsf, search_many_fn=dsm)
+    decomposed = decompose(query, search_fn=dsf, search_many_fn=dsm,
+                           **(decompose_kwargs or {}))
 
     # (opsiyonel) Bu resolve()'da kNN icin kodlanacak TUM metinler decompose'dan
     # sonra bellidir: her hipotezin kurum kismi + tam sorgu (subunit havuzlari).

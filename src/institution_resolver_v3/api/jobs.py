@@ -23,7 +23,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Literal
 
-JobKind = Literal["gate", "judge", "decide"]
+JobKind = Literal["gate", "judge", "decide", "inventory"]
 JobStatusName = Literal["pending", "running", "done", "error"]
 
 # run_fn: on_progress callback'i alir, run_*_batch'in dondurdugu ozet dict'i doner

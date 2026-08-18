@@ -1,4 +1,5 @@
-"""Envanter modu - `institution-field-inventory.csv`'nin parent'i BOS satirlari icin.
+"""Envanter modu - `data/inventory/raw.csv`'nin (eski adi:
+institution-field-inventory.csv) parent'i BOS satirlari icin.
 
 Normal `decide()` akisindan UC noktada ayrilir (hepsi bu is icin olculdu,
 2026-08-11, 500 sorguluk gercek ornek):

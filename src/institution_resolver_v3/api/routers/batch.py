@@ -27,6 +27,7 @@ from institution_resolver_v3.api.schemas import JobStatusResponse, JobSubmitResp
 from institution_resolver_v3.eval.batch import run_batch
 from institution_resolver_v3.eval.decide_batch import run_decide_batch
 from institution_resolver_v3.eval.gate_batch import run_gate_batch
+from institution_resolver_v3.jobs.inventory import run_inventory_batch
 from institution_resolver_v3.judge.client import LlmClient
 
 router = APIRouter(tags=["batch"])
@@ -165,6 +166,65 @@ def batch_decide(
 
     rec = job_manager.submit("decide", _run, out_path, job_id=job_id)
     return JobSubmitResponse(job_id=rec.id, kind="decide", status=rec.status)
+
+
+def _inventory_rows(in_path: Path, query_col: str) -> list[dict[str, str]]:
+    """CLI `inventory-batch` komutuyla ayni girdi sekli (bkz. cli/main.py):
+    query + normalized_name + rows. `run_inventory_batch` girdiyi iki kez
+    gezdigi icin (context haritasi + sorgu akisi) liste olarak toplanir."""
+    with in_path.open(newline="", encoding="utf-8") as fh:
+        rows = [
+            {
+                "query": (r.get(query_col) or "").strip(),
+                "normalized_name": r.get("normalized_name", ""),
+                "rows": r.get("rows", ""),
+            }
+            for r in csv.DictReader(fh)
+        ]
+    return [r for r in rows if r["query"]]
+
+
+@router.post("/batch/inventory", response_model=JobSubmitResponse)
+def batch_inventory(
+    file: UploadFile,
+    query_col: str = Form("query"),
+    top: int = Form(5),
+    limit: int | None = Form(None),
+    judge: bool = Form(True),
+    pool_gate: str = Form("chosen"),
+    job_manager: JobManager = Depends(get_job_manager),
+    ollama_client: LlmClient = Depends(get_ollama_client),
+    resolve_fn: Callable = Depends(get_resolve_fn),
+    gate_fn: Callable = Depends(get_gate_fn),
+    judge_fn: Callable = Depends(get_judge_fn),
+) -> JobSubmitResponse:
+    """Envanter modu (bkz. jobs/inventory.py): CLI `inventory-batch`'in HTTP
+    karsiligi. Girdi CSV'si `query` (+ istege bagli `normalized_name`, `rows`)
+    kolonlarini tasir - normal gate/judge/decide'dan farkli olarak subunit
+    hakemi TETIKLEMEZ, yalniz gate auto_match ise subunit karari yazilir."""
+    job_id = uuid.uuid4().hex[:12]
+    in_path = _save_upload(job_id, file)
+    _validate_query_col(in_path, query_col)
+    out_path = JOBS_DIR / f"{job_id}_out.csv"
+    rows = _inventory_rows(in_path, query_col)
+
+    def _run(on_progress):
+        return run_inventory_batch(
+            rows,
+            out_path,
+            client=ollama_client if judge else None,
+            judge_enabled=judge,
+            resolve_fn=resolve_fn,
+            gate_fn=gate_fn,
+            judge_fn=judge_fn,
+            top=top,
+            limit=limit,
+            on_progress=on_progress,
+            pool_gate=None if pool_gate == "none" else pool_gate,
+        )
+
+    rec = job_manager.submit("inventory", _run, out_path, job_id=job_id)
+    return JobSubmitResponse(job_id=rec.id, kind="inventory", status=rec.status)
 
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)

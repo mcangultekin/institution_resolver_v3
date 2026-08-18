@@ -418,20 +418,26 @@ def _ollama_reachable(host: str) -> bool:
 
 @pytest.mark.llm
 class TestLiveOllama:
-    """Canli cagri: gemma4:e2b (2026-07-24 karar - E4B/50-sorgu karsilastirmasi
-    sonrasi E2B secildi, bkz. docs/DENEY_2026-07-24_gemma_e2b_e4b_karsilastirma.md;
-    E4B yerel Ollama'dan silindi). `pytest -m llm` ile calistir.
+    """Canli cagri: gemma4:e4b - URETIMDE KULLANILAN model.
+
+    Once E2B secilmisti (2026-07-24, 50-sorgu karsilastirmasi) ama karar
+    3 gun sonra donduruldu: num_ctx'in sessizce prompt kirptigi bulunup
+    duzeltilince E4B one gecti ve uretim ona gecti (2026-07-27). Test
+    E2B'de kalmisti ve bu yuzden "model cekilmemis" diye SKIP oluyordu -
+    yani canli yolu hic sinamiyordu. Model adi uretimle AYNI kalmali,
+    yoksa test yesil gorunup gercek yapilandirmayi dogrulamaz.
 
     Ollama ayakta degilse ya da model cekilmemisse SKIP olur - varsayilan
-    suit'i (tests/unit -q) kirmaz.
+    suit'i (tests/unit -q) kirmaz. `pytest -m llm` ile calistir.
     """
 
     HOST = "http://localhost:11434"
+    MODEL = "gemma4:e4b"
 
     def test_live_judge_call(self):
         if not _ollama_reachable(self.HOST):
             pytest.skip("Ollama calismiyor (localhost:11434)")
-        client = OllamaClient(model="gemma4:e2b", host=self.HOST)
+        client = OllamaClient(model=self.MODEL, host=self.HOST)
         try:
             out = judge(_result(), client)
         except Exception as exc:  # model cekilmemis, timeout vb. - test ortami eksik

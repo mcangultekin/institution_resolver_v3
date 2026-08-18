@@ -47,6 +47,7 @@ services:
     volumes:
       - ../data/processed:/app/data/processed
       - ../data/jobs:/app/data/jobs
+      - ../data/inventory:/app/data/inventory  # envanter modu girdi/cikti CSV'leri (bkz. /batch/inventory)
       - hf_cache:/root/.cache/huggingface  # embedding modeli (~1.1GB) container silinse de tekrar inmesin
 
 volumes:

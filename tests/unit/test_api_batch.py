@@ -15,7 +15,7 @@ from institution_resolver_v3.api.jobs import JobManager
 from institution_resolver_v3.api.routers import batch as batch_router
 
 
-def _fake_resolve(query, size=5):
+def _fake_resolve(query, size=5, **kwargs):
     return NS(
         query=query,
         parents=[NS(id="P1", name="EGE UNIVERSITESI")],
@@ -104,6 +104,101 @@ def test_batch_decide_end_to_end(tmp_path, monkeypatch):
     status = _wait_for(client, job_id)
     assert status["status"] == "done"
     assert status["ok"] == 1
+
+
+def test_batch_inventory_end_to_end(tmp_path, monkeypatch):
+    """judge=False: gate karari yeterli, /jobs/inventory.py'nin hakem/havuz-kapisi
+    dalina (gercek data/processed/parent_canonical.jsonl okuyan load_token_df)
+    girmeden CLI'daki gate-only akisi dogrulanir."""
+    monkeypatch.setattr(batch_router, "JOBS_DIR", tmp_path)
+    client = TestClient(_make_app())
+    csv_content = "query,normalized_name,rows\nege universitesi tip fakultesi,ege universitesi tip fakultesi,3\n"
+    r = client.post(
+        "/batch/inventory",
+        files={"file": ("in.csv", csv_content, "text/csv")},
+        data={"query_col": "query", "judge": "false"},
+    )
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    assert r.json()["kind"] == "inventory"
+
+    status = _wait_for(client, job_id)
+    assert status["status"] == "done"
+    assert status["ok"] == 1
+
+    result = client.get(f"/jobs/{job_id}/result")
+    assert result.status_code == 200
+    assert "P1" in result.text
+
+
+def test_batch_judge_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setattr(batch_router, "JOBS_DIR", tmp_path)
+    client = TestClient(_make_app())
+    csv_content = "raw_name\nege universitesi tip fakultesi\n"
+    r = client.post(
+        "/batch/judge",
+        files={"file": ("in.csv", csv_content, "text/csv")},
+        data={"query_col": "raw_name"},
+    )
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    status = _wait_for(client, job_id)
+    assert status["status"] == "done"
+    assert status["ok"] == 1
+
+
+def test_batch_empty_csv_completes_with_zero_rows(tmp_path, monkeypatch):
+    """Sadece basligi olan (satirsiz) CSV - job hata vermeden 0 satirla biter."""
+    monkeypatch.setattr(batch_router, "JOBS_DIR", tmp_path)
+    client = TestClient(_make_app())
+    r = client.post(
+        "/batch/gate",
+        files={"file": ("in.csv", "raw_name\n", "text/csv")},
+        data={"query_col": "raw_name"},
+    )
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    status = _wait_for(client, job_id)
+    assert status["status"] == "done"
+    assert status["ok"] == 0
+    assert status["total"] == 0
+
+
+def test_jobs_run_sequentially_max_workers_one(tmp_path, monkeypatch):
+    """JobManager max_workers=1 (bkz. api/jobs.py): ikinci job, birinci
+    bitmeden 'running'a gecmemeli - kaynak (ES/Ollama/model) yarisini onleyen
+    seri calistirmayi dogrudan dogrular."""
+    monkeypatch.setattr(batch_router, "JOBS_DIR", tmp_path)
+    app = _make_app()
+
+    def _slow_gate(result):
+        time.sleep(0.3)
+        return _fake_gate(result)
+
+    app.dependency_overrides[deps.get_gate_fn] = lambda: _slow_gate
+    client = TestClient(app)
+    csv_content = "raw_name\nx\n"
+
+    r1 = client.post(
+        "/batch/gate",
+        files={"file": ("in.csv", csv_content, "text/csv")},
+        data={"query_col": "raw_name"},
+    )
+    r2 = client.post(
+        "/batch/gate",
+        files={"file": ("in.csv", csv_content, "text/csv")},
+        data={"query_col": "raw_name"},
+    )
+    job1, job2 = r1.json()["job_id"], r2.json()["job_id"]
+
+    time.sleep(0.05)  # birinci is basladi, ~0.3sn surecek
+    s1 = client.get(f"/jobs/{job1}").json()
+    s2 = client.get(f"/jobs/{job2}").json()
+    assert s1["status"] == "running"
+    assert s2["status"] == "pending"
+
+    assert _wait_for(client, job1)["status"] == "done"
+    assert _wait_for(client, job2)["status"] == "done"
 
 
 def test_batch_missing_query_col_returns_422(tmp_path, monkeypatch):
