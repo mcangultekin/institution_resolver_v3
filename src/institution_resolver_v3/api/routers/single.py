@@ -81,7 +81,19 @@ def _candidate_out(c) -> CandidateOut:
     )
 
 
+def _candidates_out(candidate_ids: list[str], pool) -> list[CandidateOut]:
+    """id listesi -> tam `CandidateOut` listesi (havuzda bulunamayan id
+    sessizce atlanir - gate kendi urettigi havuzdan id verdigi icin bu
+    olmamasi gereken bir durum, ama halusinasyon degil)."""
+    by_id = {c.id: c for c in pool}
+    return [_candidate_out(by_id[cid]) for cid in candidate_ids if cid in by_id]
+
+
 def _gate_response(result, verdict) -> GateResponse:
+    """`matched_id`/`name`/`confidence`/`signals`/`*_record` DOKUNULMADI
+    (2026-08-21 kullanici karari) - gate'in verdigi degeri her zaman tasir.
+    `candidates` SAF EKLENTI (bkz. api/schemas.py GateDecisionOut)."""
+
     def _decision_out(d, pool) -> GateDecisionOut:
         return GateDecisionOut(
             verdict=d.verdict,
@@ -90,6 +102,7 @@ def _gate_response(result, verdict) -> GateResponse:
             parent_name=_parent_name_of(d.matched_id, pool),
             confidence=d.confidence,
             signals=d.signals,
+            candidates=_candidates_out(d.candidates, pool),
         )
 
     return GateResponse(
@@ -142,6 +155,35 @@ def gate_endpoint(
     return _gate_response(result, verdict)
 
 
+_SUGGESTIBLE = ("review", "ambiguous")
+
+
+def _judge_parent_candidates(verdict, pool) -> list[CandidateOut]:
+    """Judge review/ambiguous'ta zaten TEK bir matched_id veriyor - "oneri"
+    o degeri AYRICA (ek olarak) tasir, karar/matched_id alanina DOKUNMAZ
+    (2026-08-21 karari). YALNIZ parent icin - subunit'e hic uygulanmiyor."""
+    if verdict.verdict not in _SUGGESTIBLE or verdict.matched_id is None:
+        return []
+    return _candidates_out([verdict.matched_id], pool)
+
+
+def _decide_parent_candidates(d, pool) -> list[CandidateOut]:
+    """`/decide`'in final parent karari review/ambiguous ise "oneri"yi
+    kaynagina gore doldurur (2026-08-21 karari, eval/decide_batch.py
+    `_decide_candidates_cell` ile AYNI ilke): `decided_by=gate` -> gate'in
+    kendi candidates listesi (bkz. d.gate.parent - pratikte bu dal decide()'in
+    kendi mantigi geregi HEP auto_match'te calisir, o yuzden bos gelir);
+    `decided_by=judge` -> judge'in zaten verdigi TEK matched_id."""
+    if d.parent.verdict not in _SUGGESTIBLE:
+        return []
+    ids = (
+        d.gate.parent.candidates
+        if d.parent.decided_by == "gate"
+        else ([d.parent.matched_id] if d.parent.matched_id else [])
+    )
+    return _candidates_out(ids, pool)
+
+
 def _judge_client(req: JudgeQueryRequest, base_client: LlmClient) -> LlmClient:
     if req.model and isinstance(base_client, OllamaClient) and req.model != base_client.model:
         return OllamaClient(model=req.model, host=base_client.host)
@@ -167,6 +209,7 @@ def judge_endpoint(
             verdict=verdict.parent.verdict,
             matched_id=verdict.parent.matched_id,
             name=_name_of(verdict.parent.matched_id, result.parents),
+            candidates=_judge_parent_candidates(verdict.parent, result.parents),
         ),
         subunit=(
             None
@@ -206,6 +249,7 @@ def decide_endpoint(
             matched_id=d.parent.matched_id,
             name=_name_of(d.parent.matched_id, d.resolve_result.parents),
             decided_by=d.parent.decided_by,
+            candidates=_decide_parent_candidates(d, d.resolve_result.parents),
         ),
         subunit=(
             None

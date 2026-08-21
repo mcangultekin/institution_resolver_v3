@@ -29,6 +29,11 @@ FIELDNAMES = [
     "parent_verdict",
     "parent_id",
     "parent_name",
+    # "Oneri" (2026-08-21 karari): SAF EKLENTI - parent_id/parent_name'e
+    # DOKUNMAZ. Final karar review/ambiguous ise "id:Ad, id:Ad" (gate'in
+    # candidates listesi ya da judge'in tek adayi - kim karar verdiyse
+    # oradan); auto_match/no_match/hata satirlarinda BOS.
+    "candidates",
     "subunit_verdict",
     "subunit_id",
     "subunit_name",
@@ -64,6 +69,24 @@ def _name_of(pool: list, matched_id: str | None) -> str:
         return ""
     c = next((c for c in pool if c.id == matched_id), None)
     return c.name if c else ""
+
+
+_SUGGESTIBLE = ("review", "ambiguous")
+
+
+def _decide_candidates_cell(d: DecideResult, pool: list) -> str:
+    """Final karar review/ambiguous ise "oneri" hucresini doldurur - kaynak
+    kimin karar verdigine gore degisir: `decided_by=gate` ise gate'in kendi
+    candidates listesi (bkz. gate.gate.py); `decided_by=judge` ise judge'in
+    zaten verdigi TEK matched_id (2026-08-21 karari, SAF EKLENTI)."""
+    if d.parent.verdict not in _SUGGESTIBLE:
+        return ""
+    if d.parent.decided_by == "gate":
+        ids = d.gate.parent.candidates
+    else:
+        ids = [d.parent.matched_id] if d.parent.matched_id else []
+    by_id = {c.id: c.name for c in pool}
+    return ", ".join(f"{cid}:{by_id.get(cid, '')}" for cid in ids)
 
 
 def _gate_signal_cols(prefix: str, d: GateDecision | None) -> dict[str, str]:
@@ -109,6 +132,7 @@ def process_one_decide(
         rec["parent_verdict"] = d.parent.verdict
         rec["parent_id"] = d.parent.matched_id or ""
         rec["parent_name"] = _name_of(d.resolve_result.parents, d.parent.matched_id)
+        rec["candidates"] = _decide_candidates_cell(d, d.resolve_result.parents)
         if d.subunit is not None:
             rec["subunit_verdict"] = d.subunit.verdict
             rec["subunit_id"] = d.subunit.matched_id or ""

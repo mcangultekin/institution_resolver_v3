@@ -24,7 +24,9 @@ def _fake_resolve(query, size=5, **kwargs):
 
 
 def _fake_gate(result):
-    parent_d = NS(verdict="auto_match", matched_id="P1", confidence=0.95, signals={})
+    parent_d = NS(
+        verdict="auto_match", matched_id="P1", confidence=0.95, signals={}, candidates=[],
+    )
     return NS(query=result.query, parent=parent_d, subunit=None, unit_phrase=None)
 
 

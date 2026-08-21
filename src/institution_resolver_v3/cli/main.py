@@ -144,7 +144,12 @@ def gate_cmd(
         return c.name if c else ""
 
     def _line(label: str, d) -> None:
-        name = _name_of(d.matched_id, result.parents if label == "parent" else result.subunits)
+        # matched_id/name/sinyaller DOKUNULMADI (2026-08-21 karari) - "oneri"
+        # (varsa) SAF EKLENTI olarak ayri bir satirda listelenir; YALNIZ
+        # parent'ta dolu gelir (subunit'in kendi GateDecision.candidates'i
+        # hep bos, bkz. gate.gate.py).
+        pool = result.parents if label == "parent" else result.subunits
+        name = _name_of(d.matched_id, pool)
         s = d.signals
         cos = f"{s['cosine']:+.2f}" if s.get("cosine") is not None else "  — "
         exact = f"✓(span{s.get('exact_span', 0)})" if s.get("exact_match") else "·"
@@ -157,6 +162,9 @@ def gate_cmd(
             f"          sinyaller: tsr={s.get('tsr', 0):.0f} exact={exact} çelişki={conf} "
             f"| gösterim: bm25={s.get('bm25_norm', 0):.2f} kosinüs={cos}  ({s.get('reason', '')})"
         )
+        if d.candidates:
+            names = ", ".join(f"{_name_of(cid, pool)} [{cid}]" for cid in d.candidates)
+            typer.echo(f"          öneri: {names}")
 
     _line("parent", verdict.parent)
     if verdict.subunit is not None:
@@ -208,6 +216,11 @@ def judge_cmd(
     p_cand = _candidate_of(verdict.parent.matched_id, result.parents)
     p_name = p_cand.name if p_cand else ""
     typer.echo(f"parent   : {verdict.parent.verdict:12s} {p_name:35s} id={verdict.parent.matched_id or '—'}")
+    # "Oneri" (2026-08-21 karari): SAF EKLENTI, matched_id'ye DOKUNMAZ. Judge
+    # review/ambiguous'ta zaten tek bir matched_id veriyor - ayni degeri ek
+    # bir satirda da gosteriyoruz. YALNIZ parent (subunit'e HIC uygulanmiyor).
+    if verdict.parent.verdict in ("review", "ambiguous") and p_cand is not None:
+        typer.echo(f"           öneri: {p_cand.name} [id {p_cand.id}]")
     if verdict.subunit is not None:
         s_cand = _candidate_of(verdict.subunit.matched_id, result.subunits)
         s_name = s_cand.name if s_cand else ""
@@ -268,6 +281,20 @@ def decide_cmd(
     typer.echo(
         f"parent   : {d.parent.verdict:12s} {p_name:35s} id={d.parent.matched_id or '—'}  [{d.parent.decided_by}]"
     )
+    # "Oneri" (2026-08-21 karari): SAF EKLENTI, matched_id'ye DOKUNMAZ.
+    # decided_by=gate ise gate'in candidates listesi (pratikte hep bos - o
+    # dal yalniz auto_match'te calisir); decided_by=judge ise judge'in
+    # zaten verdigi TEK matched_id. YALNIZ parent (bkz. api/routers/single.py
+    # _decide_parent_candidates ayni ilke).
+    if d.parent.verdict in ("review", "ambiguous"):
+        cand_ids = (
+            d.gate.parent.candidates
+            if d.parent.decided_by == "gate"
+            else ([d.parent.matched_id] if d.parent.matched_id else [])
+        )
+        if cand_ids:
+            names = ", ".join(f"{_name_of(cid, d.resolve_result.parents)} [{cid}]" for cid in cand_ids)
+            typer.echo(f"           öneri: {names}")
     if d.subunit is not None:
         s_name = _name_of(d.subunit.matched_id, d.resolve_result.subunits)
         typer.echo(

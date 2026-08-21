@@ -66,6 +66,11 @@ class GateDecisionOut(BaseModel):
     parent_name: str | None = None  # sadece subunit karari icin dolu - hangi kuruma bagli
     confidence: float
     signals: dict[str, Any]
+    # "Oneri" (2026-08-21 karari): SAF EKLENTI - matched_id/name/confidence/
+    # signals'a HIC DOKUNMAZ. YALNIZ review/ambiguous + guclu exact varsa
+    # dolu; YALNIZ parent kararinda (subunit'te hep bos, bkz. gate.gate.py
+    # MAX_SUGGESTED_CANDIDATES docstring'i).
+    candidates: list[CandidateOut] = []
 
 
 class GateResponse(BaseModel):
@@ -87,6 +92,10 @@ class JudgeDecisionOut(BaseModel):
     matched_id: str | None
     name: str | None = None
     parent_name: str | None = None
+    # "Oneri" (2026-08-21 karari): SAF EKLENTI. Judge review/ambiguous'ta
+    # zaten TEK bir matched_id veriyor - o degeri burada AYRICA (ek olarak)
+    # tasir. YALNIZ parent icin (bkz. GateDecisionOut.candidates ayni ilke).
+    candidates: list[CandidateOut] = []
 
 
 class JudgeResponse(BaseModel):
@@ -107,6 +116,12 @@ class DecideDecisionOut(BaseModel):
     name: str | None = None
     parent_name: str | None = None
     decided_by: Literal["gate", "judge"]
+    # "Oneri" (2026-08-21 karari): SAF EKLENTI - matched_id/name/decided_by'a
+    # DOKUNMAZ. review/ambiguous ise kaynagina gore dolar: decided_by=gate ->
+    # gate'in kendi candidates listesi; decided_by=judge -> judge'in zaten
+    # verdigi TEK matched_id (bkz. eval/decide_batch.py ayni ilke, api/routers/
+    # single.py _decide_parent_candidates).
+    candidates: list[CandidateOut] = []
 
 
 class DecideResponse(BaseModel):

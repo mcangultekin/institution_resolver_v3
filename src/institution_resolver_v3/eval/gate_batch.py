@@ -30,6 +30,11 @@ FIELDNAMES = [
     "parent_bm25",
     "parent_cosine",
     "parent_reason",
+    # "Oneri" (2026-08-21 karari): SAF EKLENTI - parent_id/parent_name'e
+    # DOKUNMAZ. review/ambiguous + guclu exact varsa dolu ("id:Ad, id:Ad"),
+    # auto_match/no_match/hata satirlarinda BOS (gate.py candidates listesini
+    # zaten sadece o iki durumda dolduruyor - bkz. MAX_SUGGESTED_CANDIDATES).
+    "candidates",
     "subunit_verdict",
     "subunit_id",
     "subunit_name",
@@ -54,6 +59,13 @@ def _name_of(pool: list, matched_id: str | None) -> str:
         return ""
     c = next((c for c in pool if c.id == matched_id), None)
     return c.name if c else ""
+
+
+def _format_candidates(pool: list, ids: list[str]) -> str:
+    """Tek hucre, virgulle ayrilmis "id:Ad" ciftleri (2026-08-21 kullanici
+    karari - CSV'de tek "oneri" sutunu, ayri cand1/cand2/.. kolonlari degil)."""
+    by_id = {c.id: c.name for c in pool}
+    return ", ".join(f"{cid}:{by_id.get(cid, '')}" for cid in ids)
 
 
 def _signal_cols(prefix: str, d: GateDecision | None) -> dict[str, str]:
@@ -101,6 +113,7 @@ def process_one_gate(
         rec["parent_id"] = g.parent.matched_id or ""
         rec["parent_name"] = _name_of(res.parents, g.parent.matched_id)
         rec.update(_signal_cols("parent", g.parent))
+        rec["candidates"] = _format_candidates(res.parents, g.parent.candidates)
         if g.subunit is not None:
             rec["subunit_verdict"] = g.subunit.verdict
             rec["subunit_id"] = g.subunit.matched_id or ""
@@ -114,6 +127,7 @@ def process_one_gate(
                     "matched_id": g.parent.matched_id,
                     "name": rec["parent_name"],
                     "signals": g.parent.signals,
+                    "candidates": g.parent.candidates,
                 },
                 "subunit": (
                     None

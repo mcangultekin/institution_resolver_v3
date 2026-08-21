@@ -9,8 +9,30 @@ from types import SimpleNamespace as NS
 from institution_resolver_v3.eval.decide_batch import FIELDNAMES, process_one_decide, run_decide_batch
 
 
-def _gate_decision(verdict, matched_id, reason):
-    return NS(verdict=verdict, matched_id=matched_id, confidence=0.9, signals={"reason": reason, "tsr": 90.0})
+def _gate_decision(verdict, matched_id, reason, candidates=None):
+    return NS(
+        verdict=verdict, matched_id=matched_id, confidence=0.9,
+        signals={"reason": reason, "tsr": 90.0}, candidates=candidates or [],
+    )
+
+
+def _decide_ambiguous_by_judge(query, client, size=5):
+    """Gate belirsiz (review) -> LLM'e dustu -> judge da ambiguous dedi ama
+    TEK bir matched_id verdi. "Oneri" hucresi bu tek adayi tasimali."""
+    res = NS(
+        parents=[NS(id="P1", name="EGE UNI"), NS(id="P2", name="EGE UNIVERSITY")],
+        subunits=[],
+    )
+    g = NS(parent=_gate_decision("review", None, "exact_yok"), subunit=None)
+    return NS(
+        query=query,
+        parent=NS(verdict="ambiguous", matched_id="P1", decided_by="judge"),
+        subunit=None,
+        unit_phrase=None,
+        gate=g,
+        judge=NS(parent=NS(verdict="ambiguous", matched_id="P1"), subunit=None, unit_phrase=None),
+        resolve_result=res,
+    )
 
 
 def _decide_gate_only(query, client, size=5):
@@ -60,6 +82,19 @@ def test_gate_decided_row_has_no_llm_and_gate_signals():
     assert rec["gate_parent_verdict"] == "auto_match"
     assert rec["gate_parent_tsr"] == "90.0"
     assert rec["gate_subunit_verdict"] == "auto_match"
+    assert rec["candidates"] == ""  # auto_match: oneri BOS
+
+
+def test_ambiguous_by_judge_writes_candidates_cell_without_touching_parent_id():
+    rec = process_one_decide("belirsiz uni", client=None, decide_fn=_decide_ambiguous_by_judge)
+    assert rec["status"] == "ok"
+    assert rec["decided_by"] == "judge"
+    assert rec["parent_verdict"] == "ambiguous"
+    # parent_id/parent_name DOKUNULMADI - judge'in verdigi degeri tasir
+    assert rec["parent_id"] == "P1"
+    assert rec["parent_name"] == "EGE UNI"
+    # "oneri" SAF EKLENTI - judge'in TEK adayi, ek olarak
+    assert rec["candidates"] == "P1:EGE UNI"
 
 
 def test_escalated_row_still_carries_gate_signals():

@@ -31,6 +31,11 @@ FIELDNAMES = [
     "parent_verdict",  # auto_match | review | ambiguous | no_match
     "parent_id",
     "parent_name",
+    # "Oneri" (2026-08-21 karari): SAF EKLENTI - parent_id/parent_name'e
+    # DOKUNMAZ. Judge review/ambiguous'ta zaten TEK bir matched_id veriyor,
+    # o degeri "id:Ad" olarak burada da tasir; auto_match/no_match/hata
+    # satirlarinda BOS.
+    "candidates",
     "subunit_verdict",
     "subunit_id",
     "subunit_name",
@@ -46,6 +51,17 @@ def _name_of(pool: list, matched_id: str | None) -> str:
         return ""
     c = next((c for c in pool if c.id == matched_id), None)
     return c.name if c else ""
+
+
+_SUGGESTIBLE = ("review", "ambiguous")
+
+
+def _candidates_cell(verdict: str, matched_id: str | None, pool: list) -> str:
+    """Judge zaten review/ambiguous'ta TEK bir matched_id veriyor - "oneri"
+    hucresi o degeri "id:Ad" olarak AYRICA tasir (2026-08-21 karari)."""
+    if verdict not in _SUGGESTIBLE or matched_id is None:
+        return ""
+    return f"{matched_id}:{_name_of(pool, matched_id)}"
 
 
 def process_one(
@@ -74,6 +90,7 @@ def process_one(
         rec["parent_verdict"] = v.parent.verdict
         rec["parent_id"] = v.parent.matched_id or ""
         rec["parent_name"] = _name_of(res.parents, v.parent.matched_id)
+        rec["candidates"] = _candidates_cell(v.parent.verdict, v.parent.matched_id, res.parents)
         if v.subunit is not None:
             rec["subunit_verdict"] = v.subunit.verdict
             rec["subunit_id"] = v.subunit.matched_id or ""

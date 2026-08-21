@@ -59,6 +59,10 @@
   }
   .error { color: #dc2626; }
   .hint { color: var(--muted); font-size: .85rem; margin-top: 6px; }
+  .candidates { margin-top: 6px; }
+  .candidates .label { font-size: .8rem; color: var(--muted); }
+  .candidates ul { margin: 4px 0 0; padding-left: 18px; }
+  .candidates li { font-size: .95rem; margin-top: 2px; }
   .progress-bar {
     height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; margin-top: 8px;
   }
@@ -122,6 +126,18 @@ function renderError(detail, fallback) {
   return `<p class="error">Hata: ${detail || fallback}</p>`;
 }
 
+function renderCandidates(candidates) {
+  // "Oneri" (2026-08-21 karari): SAF EKLENTI - mevcut isim/id gosterimine
+  // DOKUNMAZ, yaninda ek olarak durur. YALNIZ kurum (parent) icin dolu
+  // gelir; review/ambiguous + guclu exact varsa (bkz. gate.gate.py).
+  if (!candidates || !candidates.length) return '';
+  const items = candidates.map(c => {
+    const parentSuffix = c.parent_name ? ` <span class="hint">(${c.parent_name})</span>` : '';
+    return `<li>${c.name}${parentSuffix} <span class="hint">(id ${c.id})</span></li>`;
+  }).join('');
+  return `<div class="candidates"><div class="label">öneri</div><ul>${items}</ul></div>`;
+}
+
 function renderDecision(title, d) {
   if (!d) return `<div class="field"><div class="label">${title}</div><div class="value">(sorguda yok)</div></div>`;
   const parentSuffix = d.parent_name ? ` <span class="hint">(${d.parent_name})</span>` : '';
@@ -129,6 +145,7 @@ function renderDecision(title, d) {
     <div class="field">
       <div class="label">${title} ${verdictBadge(d.verdict)}</div>
       <div class="value">${d.name || '—'}${parentSuffix} ${d.matched_id ? `<span class="hint">(id ${d.matched_id})</span>` : ''}</div>
+      ${renderCandidates(d.candidates)}
     </div>`;
 }
 

@@ -32,6 +32,10 @@ def _judge_nomatch(res, client):
     return NS(parent=NS(verdict="no_match", matched_id=None), subunit=None, unit_phrase=None)
 
 
+def _judge_ambiguous(res, client):
+    return NS(parent=NS(verdict="ambiguous", matched_id="P1"), subunit=None, unit_phrase=None)
+
+
 def _judge_branchy(res, client):
     if res.query == "boom":
         raise LlmError("baglanti koptu")
@@ -51,6 +55,18 @@ def test_process_one_ok_full():
     assert rec["unit_phrase"] == "tip fakultesi"
     d = json.loads(rec["result_json"])
     assert d["parent"]["matched_id"] == "P1" and d["subunit"]["matched_id"] == "S1"
+    assert rec["candidates"] == ""  # auto_match: oneri BOS
+
+
+def test_ambiguous_writes_candidates_cell_without_touching_parent_id():
+    rec = process_one("belirsiz uni", client=None, resolve_fn=_resolve, judge_fn=_judge_ambiguous)
+    assert rec["status"] == "ok"
+    assert rec["parent_verdict"] == "ambiguous"
+    # parent_id/parent_name DOKUNULMADI - judge'in verdigi degeri tasir
+    assert rec["parent_id"] == "P1"
+    assert rec["parent_name"] == "EGE UNIVERSITESI"
+    # "oneri" SAF EKLENTI - judge'in TEK adayi, ek olarak
+    assert rec["candidates"] == "P1:EGE UNIVERSITESI"
 
 
 def test_no_match_is_not_error():

@@ -24,6 +24,11 @@ def _fake_resolve(query, size=5, **kw):  # **kw: with_cosine gibi gosterim bayra
         token_set_ratio=95.0, exact_match=True, passed_parent_filter=None,
         qualifier_conflict=False, raw={},
     )
+    parent2 = NS(  # ambiguous/oneri testlerinde rakip aday
+        id="P2", name="EGE UNIVERSITY", bm25_norm=0.85, cosine=0.45,
+        token_set_ratio=90.0, exact_match=True, passed_parent_filter=None,
+        qualifier_conflict=False, raw={},
+    )
     subunit = NS(
         id="S1", name="TIP FAKULTESI", bm25_norm=0.8, cosine=0.4,
         token_set_ratio=90.0, exact_match=True, passed_parent_filter=True,
@@ -34,18 +39,40 @@ def _fake_resolve(query, size=5, **kw):  # **kw: with_cosine gibi gosterim bayra
         boundary_score=95.0, matched_parent_name="EGE UNIVERSITESI",
         matched_parent_id="P1", hypotheses=[],
     )
-    return NS(query=query, decomposed=decomposed, parents=[parent], subunits=[subunit])
+    return NS(query=query, decomposed=decomposed, parents=[parent, parent2], subunits=[subunit])
 
 
 def _fake_gate(result):
-    parent_d = NS(verdict="auto_match", matched_id="P1", confidence=0.95, signals={"tsr": 95})
-    subunit_d = NS(verdict="auto_match", matched_id="S1", confidence=0.9, signals={"tsr": 90})
+    parent_d = NS(
+        verdict="auto_match", matched_id="P1", confidence=0.95, signals={"tsr": 95},
+        candidates=[],
+    )
+    subunit_d = NS(
+        verdict="auto_match", matched_id="S1", confidence=0.9, signals={"tsr": 90},
+        candidates=[],
+    )
     return NS(query=result.query, parent=parent_d, subunit=subunit_d, unit_phrase="tip fakultesi")
+
+
+def _fake_gate_ambiguous(result):
+    parent_d = NS(
+        verdict="ambiguous", matched_id="P1", confidence=0.7, signals={"tsr": 90},
+        candidates=["P1", "P2"],
+    )
+    return NS(query=result.query, parent=parent_d, subunit=None, unit_phrase=None)
 
 
 def _fake_judge_auto(result, client):
     return NS(
         parent=NS(verdict="auto_match", matched_id="P1"),
+        subunit=NS(verdict="auto_match", matched_id="S1"),
+        unit_phrase="tip fakultesi",
+    )
+
+
+def _fake_judge_ambiguous(result, client):
+    return NS(
+        parent=NS(verdict="ambiguous", matched_id="P1"),
         subunit=NS(verdict="auto_match", matched_id="S1"),
         unit_phrase="tip fakultesi",
     )
@@ -69,6 +96,30 @@ def _fake_decide_gate_only(query, client, size=5, **kw):  # **kw: with_cosine gi
         unit_phrase="tip fakultesi",
         gate=g,
         judge=None,
+        resolve_result=result,
+    )
+
+
+def _fake_decide_ambiguous_by_judge(query, client, size=5, **kw):
+    """Gate belirsiz -> LLM'e dustu -> judge da ambiguous dedi ama TEK bir
+    matched_id verdi. "Oneri" hucresi bu tek adayi tasimali (2026-08-21)."""
+    result = _fake_resolve(query, size=size)
+    g = NS(
+        query=result.query,
+        parent=NS(
+            verdict="review", matched_id=None, confidence=0.5, signals={"tsr": 80},
+            candidates=[],
+        ),
+        subunit=None,
+        unit_phrase=None,
+    )
+    return NS(
+        query=query,
+        parent=NS(verdict="ambiguous", matched_id="P1", decided_by="judge"),
+        subunit=None,
+        unit_phrase=None,
+        gate=g,
+        judge=NS(parent=NS(verdict="ambiguous", matched_id="P1"), subunit=None, unit_phrase=None),
         resolve_result=result,
     )
 
@@ -109,6 +160,25 @@ def test_gate_ok():
     assert body["parent"]["matched_id"] == "P1"
     assert body["parent"]["name"] == "EGE UNIVERSITESI"
     assert body["subunit"]["name"] == "TIP FAKULTESI"
+    # auto_match: "oneri" BILEREK bos (2026-08-21 karari)
+    assert body["parent"]["candidates"] == []
+    assert body["subunit"]["candidates"] == []
+
+
+def test_gate_ambiguous_exposes_candidates_without_touching_matched_id():
+    app = _make_app()
+    app.dependency_overrides[deps.get_gate_fn] = lambda: _fake_gate_ambiguous
+    client = TestClient(app)
+    r = client.post("/gate", json={"query": "ege universitesi"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["parent"]["verdict"] == "ambiguous"
+    # matched_id/name DOKUNULMADI - eskisi gibi gate'in secimini tasir
+    assert body["parent"]["matched_id"] == "P1"
+    assert body["parent"]["name"] == "EGE UNIVERSITESI"
+    # "oneri" SAF EKLENTI
+    cand_ids = [c["id"] for c in body["parent"]["candidates"]]
+    assert cand_ids == ["P1", "P2"]
 
 
 def test_judge_ok():
@@ -118,6 +188,21 @@ def test_judge_ok():
     body = r.json()
     assert body["parent"]["verdict"] == "auto_match"
     assert body["parent"]["name"] == "EGE UNIVERSITESI"
+    # auto_match: "oneri" BILEREK bos
+    assert body["parent"]["candidates"] == []
+
+
+def test_judge_ambiguous_exposes_candidates_without_touching_matched_id():
+    client = TestClient(_make_app(judge_fn=_fake_judge_ambiguous))
+    r = client.post("/judge", json={"query": "ege universitesi tip fakultesi"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["parent"]["verdict"] == "ambiguous"
+    assert body["parent"]["matched_id"] == "P1"  # DOKUNULMADI
+    cand_ids = [c["id"] for c in body["parent"]["candidates"]]
+    assert cand_ids == ["P1"]  # judge'in kendi tek adayi, ek olarak
+    # subunit'e HIC dokunulmadi (parent-only, kullanici karari)
+    assert body["subunit"]["candidates"] == []
 
 
 def test_judge_validation_error_maps_to_502():
@@ -140,6 +225,22 @@ def test_decide_ok_gate_only():
     assert body["parent"]["decided_by"] == "gate"
     assert body["parent"]["matched_id"] == "P1"
     assert body["gate"]["parent"]["verdict"] == "auto_match"
+    # auto_match: "oneri" BILEREK bos
+    assert body["parent"]["candidates"] == []
+
+
+def test_decide_ambiguous_by_judge_exposes_candidates_without_touching_matched_id():
+    client = TestClient(_make_app(decide_fn=_fake_decide_ambiguous_by_judge))
+    r = client.post("/decide", json={"query": "ege universitesi tip fakultesi"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["parent"]["decided_by"] == "judge"
+    assert body["parent"]["verdict"] == "ambiguous"
+    # matched_id DOKUNULMADI - judge'in verdigi degeri tasir
+    assert body["parent"]["matched_id"] == "P1"
+    # "oneri" SAF EKLENTI - judge'in TEK adayi, ek olarak
+    cand_ids = [c["id"] for c in body["parent"]["candidates"]]
+    assert cand_ids == ["P1"]
 
 
 def test_decide_error_maps_to_502():

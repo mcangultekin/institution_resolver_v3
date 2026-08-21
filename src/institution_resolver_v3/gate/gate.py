@@ -53,6 +53,17 @@ CONFLICT_PENALTY = 0.30  # qualifier celiskisi -> guven cezasi
 MIN_EXACT_SPAN = 2       # auto icin exact eslesmenin en az token sayisi (generic koruma)
 _ACRONYM_MAX_LEN = 5     # tek token, <=5 harf -> kisa akronim (METU/ITU): auto YOK
 
+# "Oneri" - review/ambiguous'ta SAF EKLENTI olarak gosterilen "olasi en iyi
+# aday" listesi (2026-08-21, kullanici karari). YALNIZ guclu-exact grubundan
+# (span>=2, qualifier celiskisi yok) doldurulur; exact yoksa liste BOS kalir
+# (tsr/bm25/cosine tek basina yeterli guven vermiyor - kucuk elle-test,
+# 2026-08-21: 15 review/exact_yok sorgusunda RRF+tsr uzlasmasi bile yanlis-
+# ama-uzlasan sonuc uretti, ör. "Kahta Devlet Hastanesi" -> "Sivas State
+# Hospital"). YALNIZ PARENT'ta uretilir (subunit'te ayni ad onlarca farkli
+# parent altinda tekrarlanabiliyor, bkz. jobs/inventory.py modul docstring'i).
+# KARAR (verdict/matched_id) MANTIGINA HIC DOKUNMAZ - salt disariya EK bilgi.
+MAX_SUGGESTED_CANDIDATES = 3
+
 
 def _clamp01(x: float) -> float:
     return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
@@ -98,6 +109,10 @@ class GateDecision:
     matched_id: str | None
     confidence: float
     signals: dict[str, Any] = field(default_factory=dict)
+    # "Oneri" - SAF EKLENTI, `matched_id` DAHIL karar mantigina hic girmez
+    # (bkz. MAX_SUGGESTED_CANDIDATES). YALNIZ parent'ta doldurulur; subunit'te
+    # hep bos liste kalir.
+    candidates: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -123,6 +138,15 @@ def _signals_of(c: ScoredCandidate | None, *, reason: str) -> dict[str, Any]:
     }
 
 
+def _rank_for_suggestion(exact: list[ScoredCandidate]) -> list[str]:
+    """Guclu-exact grubunu "oneri" icin sirala: span buyukten kucuge, esitlikte
+    tsr buyukten kucuge (`best` secimiyle AYNI oncelik - `exact` uyeleri zaten
+    `_is_strong_exact` geregi qualifier_conflict=False). En fazla
+    MAX_SUGGESTED_CANDIDATES id doner; candidates[0] `best.id` ile AYNIDIR."""
+    ranked = sorted(exact, key=lambda c: (_exact_span(c), c.token_set_ratio), reverse=True)
+    return [c.id for c in ranked[:MAX_SUGGESTED_CANDIDATES]]
+
+
 def _decide_pool(
     candidates: list[ScoredCandidate],
     *,
@@ -130,6 +154,7 @@ def _decide_pool(
     floor_tsr: float,
     prefer_parent_id: str | None = None,
     any_rival_blocks_auto: bool = False,
+    expose_candidates: bool = False,
 ) -> GateDecision:
     """Bir havuzu (parent/subunit) exact-omurgali triyajdan gecirip TEK kovaya atar.
 
@@ -178,9 +203,12 @@ def _decide_pool(
 
     best = max(exact, key=lambda c: (_exact_span(c), c.token_set_ratio))
     conf = score_candidate(best)
+    suggested = _rank_for_suggestion(exact) if expose_candidates else []
 
     if _is_short_acronym(query_part):
-        return GateDecision("review", best.id, conf, _signals_of(best, reason="akronim"))
+        return GateDecision(
+            "review", best.id, conf, _signals_of(best, reason="akronim"), suggested
+        )
 
     if any_rival_blocks_auto:
         rivals = [c for c in exact if c.id != best.id]
@@ -189,8 +217,12 @@ def _decide_pool(
         rivals = [c for c in exact if c.id != best.id and _exact_span(c) >= _exact_span(best)]
         reason = "coklu_exact"
     if rivals:
-        return GateDecision("ambiguous", best.id, conf, _signals_of(best, reason=reason))
+        return GateDecision(
+            "ambiguous", best.id, conf, _signals_of(best, reason=reason), suggested
+        )
 
+    # auto_match: zaten tek kesin cevap, "oneri" BILEREK bos (yalniz review/
+    # ambiguous'ta gosterilir - kullanici karari).
     return GateDecision("auto_match", best.id, conf, _signals_of(best, reason="tek_exact"))
 
 
@@ -265,7 +297,7 @@ def gate(result: ResolveResult, *, config: dict[str, Any] | None = None) -> Gate
     # karari 2026-07-30; bkz. _decide_pool any_rival_blocks_auto). Subunit'te KAPALI.
     parent = _decide_pool(
         result.parents, query_part=institution_part, floor_tsr=floor_tsr,
-        any_rival_blocks_auto=True,
+        any_rival_blocks_auto=True, expose_candidates=True,
     )
 
     unit_phrase = (result.decomposed.unit_part or "").strip() or None

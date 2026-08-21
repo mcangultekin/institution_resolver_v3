@@ -27,9 +27,28 @@ def _signals(**kw):
 def _gate_auto(res):
     return NS(
         query=res.query,
-        parent=NS(verdict="auto_match", matched_id="P1", confidence=0.95, signals=_signals()),
-        subunit=NS(verdict="auto_match", matched_id="S1", confidence=0.9, signals=_signals()),
+        # auto_match: candidates BILEREK bos (2026-08-21 karari)
+        parent=NS(
+            verdict="auto_match", matched_id="P1", confidence=0.95, signals=_signals(),
+            candidates=[],
+        ),
+        subunit=NS(
+            verdict="auto_match", matched_id="S1", confidence=0.9, signals=_signals(),
+            candidates=[],
+        ),
         unit_phrase="tip fakultesi",
+    )
+
+
+def _gate_ambiguous(res):
+    return NS(
+        query=res.query,
+        parent=NS(
+            verdict="ambiguous", matched_id="P1", confidence=0.7,
+            signals=_signals(reason="coklu_exact"), candidates=["P1", "P2"],
+        ),
+        subunit=None,
+        unit_phrase=None,
     )
 
 
@@ -37,7 +56,7 @@ def _gate_no_match(res):
     return NS(
         query=res.query,
         parent=NS(verdict="no_match", matched_id=None, confidence=0.1,
-                  signals={"reason": "taban_alti"}),
+                  signals={"reason": "taban_alti"}, candidates=[]),
         subunit=None,
         unit_phrase=None,
     )
@@ -59,6 +78,18 @@ def test_process_one_gate_auto_writes_signals():
     assert rec["subunit_name"] == "TIP FAKULTESI"
     d = json.loads(rec["result_json"])
     assert d["parent"]["signals"]["reason"] == "tek_exact"
+    assert rec["candidates"] == ""  # auto_match: oneri BOS
+
+
+def test_ambiguous_writes_candidates_cell_without_touching_parent_id():
+    rec = process_one_gate("Ege Tıp", resolve_fn=_resolve, gate_fn=_gate_ambiguous)
+    assert rec["status"] == "ok"
+    assert rec["parent_verdict"] == "ambiguous"
+    # parent_id/parent_name DOKUNULMADI - eskisi gibi gate'in secimini tasir
+    assert rec["parent_id"] == "P1"
+    assert rec["parent_name"] == "EGE UNIVERSITESI"
+    # "oneri" SAF EKLENTI, tek hucrede virgulle ayrilmis "id:Ad"
+    assert rec["candidates"] == "P1:EGE UNIVERSITESI, P2:X UNI"
 
 
 def test_no_match_is_not_error_and_no_subunit_signals():
@@ -66,6 +97,7 @@ def test_no_match_is_not_error_and_no_subunit_signals():
     assert rec["status"] == "ok"
     assert rec["parent_verdict"] == "no_match"
     assert rec["parent_id"] == ""
+    assert rec["candidates"] == ""  # no_match: oneri BOS
     assert rec["subunit_verdict"] == ""  # subunit yok (unit_part yok)
     assert rec["subunit_tsr"] == ""
 
