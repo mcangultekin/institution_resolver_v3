@@ -14,15 +14,20 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY config ./config
 
+COPY docker/entrypoint.sh ./docker/entrypoint.sh
+RUN chmod +x ./docker/entrypoint.sh
+
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
-    -e ".[llm,embed,api]"
+    -e ".[dev,llm,embed,api]"
 
 ENV INRES3_CONFIG=/app/config/docker.yaml
 ENV PORT=8000
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
     CMD curl -sf http://localhost:8000/health || exit 1
 
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["inres3-serve"]

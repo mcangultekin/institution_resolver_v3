@@ -46,7 +46,7 @@ SORGU:
 | `data/processed/` | kanonik JSONL + `embeddings.npz` + `transform_report.json` |
 | `data/eval/` | degerlendirme setleri (gercek sorgular — **commit edilmez**) |
 | `output/` | kosu ciktilari ve loglar (**commit edilmez**; ozetleri `docs/RAPOR_*.md`) |
-| `docker/docker-compose.yml` | ES + Ollama + API |
+| `docker-compose.yml` | ES + Ollama + API (bkz. `DOCKER_README.md`) |
 | `notebooks/colab_e2e.ipynb` | ayni akis Colab'da (GPU, Docker yerine native process) |
 | `scripts/` | tek seferlik yardimcilar (benchmark siniflama, gold etiketleme) |
 | `tests/unit/` | pytest; `integration` ve `llm` marker'lari canli servis ister |
@@ -64,11 +64,11 @@ istemcisi), `api` (FastAPI servisi), `dev` (pytest).
 Servisler:
 
 ```bash
-cd docker && docker compose up -d && cd ..
-docker compose -f docker/docker-compose.yml exec ollama ollama pull gemma4:e4b
+docker compose up -d
 ```
 
-`compose` sadece servisleri ayaga kaldirir; veriyi asagidaki adimlar yukler.
+`entrypoint.sh` ilk acilista Ollama modelini otomatik indirir ve `data/processed/`
+mevcutsa indeksleme adimini kendisi calistirir; detay icin `DOCKER_README.md`.
 
 ## Indeksleme (offline, bir kez)
 
